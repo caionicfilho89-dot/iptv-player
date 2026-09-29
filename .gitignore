@@ -4,3 +4,6 @@ player_config.json
 .cache/
 __pycache__/
 *.pyc
+# saída do build
+build/
+*.spec

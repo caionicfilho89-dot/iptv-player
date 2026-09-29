@@ -1,0 +1,32 @@
+IPTV Player
+===========
+
+COMO USAR
+Dê dois cliques em "IPTV Player.exe". Não precisa instalar nada: o VLC já vem junto.
+Escolha uma categoria na esquerda e clique num canal.
+
+Se o Windows mostrar "O Windows protegeu o computador", clique em
+"Mais informações" > "Executar assim mesmo". Isso acontece com programas
+novos que ainda não têm assinatura digital.
+
+RECURSOS
+- Listas atualizadas automaticamente (iptv-org) e suas próprias listas por link ou arquivo
+- Guia de programação: o que está passando agora e a seguir
+- Pular canais offline e zapping automático (também só pelos favoritos)
+- Modo lista ou grade, tema claro/escuro e 6 cores de destaque
+- Tela cheia com controles flutuantes, janela flutuante (PiP) e mosaico 2x2/3x3
+- Gravar canal, tirar foto da tela e timer para desligar
+- Digite o número do canal para ir direto a ele
+
+ATALHOS
+0-9 ................. ir para o canal pelo número
+PgUp / PgDn ......... canal anterior / próximo
+F11 / duplo clique .. tela cheia (Esc para sair)
+Ctrl+F busca · Ctrl+D favorito · Ctrl+M mudo · Ctrl+Z zapping
+Ctrl+G guia · Ctrl+S foto · Ctrl+R gravar · Ctrl+P janela flutuante · Ctrl+L lista/grade
+
+Fotos vão para Imagens\IPTV Player e gravações para Vídeos\IPTV Player.
+
+Projeto: https://github.com/caionicfilho89-dot/iptv-player
+O VLC incluído é distribuído sob a licença LGPL/GPL (veja vlc\COPYING.txt);
+código-fonte em https://www.videolan.org/vlc/download-sources.html

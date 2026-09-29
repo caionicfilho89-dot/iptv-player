@@ -1,6 +1,6 @@
 @echo off
 cd /d "%~dp0"
-python -c "import PyQt6, vlc" 2>/dev/null || (
+python -c "import PyQt6.QtSvg, vlc" 2>nul || (
     echo Instalando dependencias pela primeira vez...
     python -m pip install -r requirements.txt
 )
