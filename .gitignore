@@ -1,0 +1,6 @@
+# configurações pessoais (favoritos, recentes, volume)
+player_config.json
+# cache de logos
+.cache/
+__pycache__/
+*.pyc
