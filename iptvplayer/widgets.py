@@ -237,7 +237,7 @@ class GridDelegate(_BaseDelegate):
 class VideoFrame(QFrame):
     doubleClicked = pyqtSignal()
 
-    def __init__(self, min_size=(480, 270)):
+    def __init__(self, min_size=(320, 180)):
         super().__init__()
         self.setMinimumSize(*min_size)
         self.setStyleSheet("background: #000;")

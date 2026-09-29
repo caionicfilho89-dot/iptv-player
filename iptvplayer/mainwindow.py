@@ -5,7 +5,7 @@ import random
 import re
 import time
 
-from PyQt6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, QUrl
+from PyQt6.QtCore import QByteArray, QEvent, QPoint, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QColor, QCursor, QDesktopServices, QFont, QGuiApplication, QKeySequence, QShortcut
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply
 from PyQt6.QtWidgets import (
@@ -36,6 +36,8 @@ STALL_TIMEOUT = 12           # segundos sem avançar = travado
 MAX_CONSECUTIVE_FAILS = 25   # evita loop infinito pulando canais
 LIST_MAX_AGE = 7 * 86400     # atualização automática das listas
 UPDATE_CHECK_EVERY = 12 * 3600
+COMPACT_BELOW = 1340         # largura da janela abaixo da qual a barra lateral vira só ícones
+LABEL_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 def hm(ts):
@@ -51,7 +53,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(app_icon())
-        self.resize(1440, 860)
+        avail = QGuiApplication.primaryScreen().availableGeometry()
+        self.resize(min(1440, avail.width() - 40), min(860, avail.height() - 40))
+        self.start_maximized = avail.width() < 1500 or avail.height() < 900
         self.cfg = cfg or Config()
 
         self.logos = LogoLoader(self)
@@ -89,6 +93,10 @@ class MainWindow(QMainWindow):
         self._sleep_warned = False
         self._last_mouse = QPoint()
         self._overlay_until = 0.0
+        self._compact = False
+        self._was_maximized = False
+        self._side_btns = []
+        self._banner_tag = ""
 
         self.instance = vlc.Instance(["--no-video-title-show", "--network-caching=1500", "--quiet",
                                       "--sub-source=marq"])
@@ -113,6 +121,10 @@ class MainWindow(QMainWindow):
 
         self._shortcuts()
         QApplication.instance().installEventFilter(self)
+        self._set_compact(self._narrow_screen())
+        if self.cfg.data.get("geometry"):
+            self.restoreGeometry(QByteArray.fromHex(self.cfg["geometry"].encode()))
+            self.start_maximized = False
         self._set_view_mode(self.cfg["view_mode"])
         self._select_category(self.cfg["last_category"])
         last = next((c for c in self.all_channels if c.url == self.cfg["last_url"]), None)
@@ -152,6 +164,7 @@ class MainWindow(QMainWindow):
                                  ("refresh", "Atualizar canais", lambda: self.update_lists()),
                                  ("settings", "Configurações", self.open_settings)):
             b = make_btn(name, "", slot, kind="flat", text="  " + text, icon_color="muted", icon_size=17)
+            self._side_btns.append((b, text))
             wrap = QHBoxLayout()
             wrap.setContentsMargins(8, 0, 8, 0)
             wrap.addWidget(b)
@@ -165,7 +178,7 @@ class MainWindow(QMainWindow):
 
         # --- lista de canais
         self.chan_panel = QWidget(objectName="channels")
-        self.chan_panel.setMinimumWidth(320)
+        self.chan_panel.setMinimumWidth(290)
         cl = QVBoxLayout(self.chan_panel)
         cl.setContentsMargins(10, 14, 6, 10)
         cl.setSpacing(8)
@@ -267,7 +280,7 @@ class MainWindow(QMainWindow):
         top.addWidget(self.fav_btn)
         top.addSpacing(8)
         top.addWidget(make_btn("prev", "Canal anterior (PgUp)", lambda: self.step(-1)))
-        self.play_btn = make_btn("pause", "Pausar / continuar", self.toggle_pause, kind="play",
+        self.play_btn = make_btn("play", "Assistir / pausar", self.toggle_pause, kind="play",
                                  icon_color="white", icon_size=22)
         top.addWidget(self.play_btn)
         top.addWidget(make_btn("next", "Próximo canal (PgDn)", lambda: self.step(+1)))
@@ -286,7 +299,7 @@ class MainWindow(QMainWindow):
         v.addLayout(top)
 
         auto = QHBoxLayout()
-        auto.setSpacing(8)
+        auto.setSpacing(6)
         self.skip_cb = QCheckBox("Pular offline")
         self.skip_cb.setChecked(self.cfg["skip_dead"])
         self.skip_cb.setToolTip(f"Se o canal não abrir em {CONNECT_TIMEOUT}s ou travar, vai para o próximo sozinho")
@@ -312,9 +325,8 @@ class MainWindow(QMainWindow):
         self.zap_mode.setCurrentIndex(1 if self.cfg["zap_random"] else 0)
         self.zap_mode.currentIndexChanged.connect(lambda i: self.cfg.__setitem__("zap_random", i == 1))
         auto.addWidget(self.zap_mode)
-        self.zap_favs_cb = QCheckBox("Só favoritos")
+        self.zap_favs_cb = make_btn("star", "Zapping só pelos favoritos", kind="tool", checkable=True, icon_size=17)
         self.zap_favs_cb.setChecked(self.cfg["zap_favs"])
-        self.zap_favs_cb.setToolTip("O zapping passa apenas pelos seus canais favoritos")
         self.zap_favs_cb.toggled.connect(lambda val: self.cfg.__setitem__("zap_favs", val))
         auto.addWidget(self.zap_favs_cb)
         self.zap_lbl = QLabel("", objectName="muted")
@@ -342,7 +354,35 @@ class MainWindow(QMainWindow):
         return w
 
     def _paint_brand(self):
-        self.brand.setText(f"▶ IPTV <span style='color:{T['accent']}'>Player</span>")
+        if self._compact:
+            self.brand.setText(f"<span style='color:{T['accent']}'>▶</span>")
+        else:
+            self.brand.setText(f"▶ IPTV <span style='color:{T['accent']}'>Player</span>")
+
+    def _set_compact(self, compact):
+        """Barra lateral só com ícones em janelas estreitas (telas pequenas ou com zoom alto)."""
+        if compact == self._compact:
+            return
+        self._compact = compact
+        self.sidebar.setFixedWidth(64 if compact else 224)
+        self.zap_btn.setText("" if compact else "  Zapping")
+        for b, text in self._side_btns:
+            b.setText("" if compact else "  " + text)
+            b.setToolTip(text if compact else "")
+        self.side_lbl.setVisible(not compact)
+        if self._banner_tag:
+            self._show_update_banner(self._banner_tag)
+        self._paint_brand()
+        self._build_nav()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if not self.fullscreen:
+            self._set_compact(self._narrow_screen() or self.width() < COMPACT_BELOW)
+
+    def _narrow_screen(self):
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        return screen.availableGeometry().width() < 1400
 
     def _shortcuts(self):
         def sc(keys, fn):
@@ -400,12 +440,15 @@ class MainWindow(QMainWindow):
         self.nav.clear()
 
         def add(key, label, ic):
-            it = QListWidgetItem(icon(ic, "muted", 18), "  " + label)
+            it = QListWidgetItem(icon(ic, "muted", 18), "" if self._compact else "  " + label)
             it.setData(Qt.ItemDataRole.UserRole, key)
+            it.setData(LABEL_ROLE, label)
+            if self._compact:
+                it.setToolTip(label)
             self.nav.addItem(it)
 
         def section(title):
-            it = QListWidgetItem(title.upper())
+            it = QListWidgetItem("" if self._compact else title.upper())
             it.setFlags(Qt.ItemFlag.NoItemFlags)
             f = QFont()
             f.setPointSizeF(7.5)
@@ -413,7 +456,7 @@ class MainWindow(QMainWindow):
             f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.8)
             it.setFont(f)
             it.setForeground(QColor(T["muted"]))
-            it.setSizeHint(QSize(10, 30))
+            it.setSizeHint(QSize(10, 12 if self._compact else 30))
             self.nav.addItem(it)
 
         add(src.FAV_KEY, "Favoritos", "star")
@@ -454,7 +497,7 @@ class MainWindow(QMainWindow):
         for i in range(self.nav.count()):
             it = self.nav.item(i)
             if it.data(Qt.ItemDataRole.UserRole) == key:
-                return it.text().strip()
+                return it.data(LABEL_ROLE) or it.text().strip()
         return key
 
     def _load_category(self, key):
@@ -553,7 +596,7 @@ class MainWindow(QMainWindow):
             self.view.setWrapping(False)
         self.view.setUniformItemSizes(True)
         # na grade o painel precisa caber pelo menos 2 colunas de cartões
-        self.chan_panel.setMinimumWidth(2 * GridDelegate.CARD.width() + 52 if grid else 320)
+        self.chan_panel.setMinimumWidth(2 * GridDelegate.CARD.width() + 52 if grid else 290)
         set_btn_icon(self.view_btn, "list" if grid else "grid")
         self.view_btn.setToolTip("Ver em lista (Ctrl+L)" if grid else "Ver em grade (Ctrl+L)")
         total = max(self.splitter.width(), 1200)
@@ -1158,6 +1201,7 @@ class MainWindow(QMainWindow):
         for w in (self.sidebar, self.chan_panel, self.controls):
             w.setVisible(not self.fullscreen)
         if self.fullscreen:
+            self._was_maximized = self.isMaximized()
             self.showFullScreen()
             self.setFocus()
             screen = self.screen() or QGuiApplication.primaryScreen()
@@ -1172,7 +1216,7 @@ class MainWindow(QMainWindow):
         else:
             self.fs_timer.stop()
             self.overlay.hide()
-            self.showNormal()
+            self.showMaximized() if self._was_maximized else self.showNormal()
 
     def _fs_mouse_tick(self):
         pos, now = QCursor.pos(), time.monotonic()
@@ -1284,7 +1328,8 @@ class MainWindow(QMainWindow):
             reply.deleteLater()
 
     def _show_update_banner(self, tag):
-        self.update_banner.setText(f"  Nova versão {tag} disponível")
+        self._banner_tag = tag
+        self.update_banner.setText("" if self._compact else f"  Nova versão {tag} disponível")
         self.update_banner.setToolTip("Abrir a página de download")
         self.update_banner.show()
 
@@ -1315,5 +1360,8 @@ class MainWindow(QMainWindow):
             self.pip.close()
         self.overlay.close()
         self.player.stop()
+        if self.fullscreen:
+            self.showNormal()
+        self.cfg["geometry"] = bytes(self.saveGeometry().toHex()).decode()
         self.cfg.save()
         super().closeEvent(e)

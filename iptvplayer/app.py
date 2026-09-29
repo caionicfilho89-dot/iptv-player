@@ -22,5 +22,5 @@ def main():
         sys.exit(1)
     from .mainwindow import MainWindow
     w = MainWindow(cfg)
-    w.show()
+    w.showMaximized() if w.start_maximized else w.show()
     sys.exit(app.exec())
