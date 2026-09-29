@@ -9,6 +9,7 @@ DEAD_TTL = 6 * 3600  # canal marcado offline fica assim por 6h
 DEFAULT_EPG_URLS = [
     "https://epgshare01.online/epgshare01/epg_ripper_BR1.xml.gz",
     "https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz",
+    "https://epgshare01.online/epgshare01/epg_ripper_PLEX1.xml.gz",  # canais FAST dos EUA (E! Keeping Up etc.)
 ]
 
 DEFAULTS = {
