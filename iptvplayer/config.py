@@ -29,10 +29,22 @@ class Config:
     def __init__(self):
         self.data = json.loads(json.dumps(DEFAULTS))  # cópia profunda
         try:
-            self.data.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
-        except (OSError, ValueError):
-            pass
+            # utf-8-sig aceita o arquivo mesmo se foi salvo no Bloco de Notas (com BOM)
+            loaded = json.loads(CONFIG_FILE.read_text(encoding="utf-8-sig"))
+            if not isinstance(loaded, dict):
+                raise ValueError("formato inválido")
+            self.data.update(loaded)
+        except OSError:
+            pass  # primeira execução
+        except ValueError:
+            # arquivo corrompido: guarda uma cópia em vez de apagar favoritos e listas em silêncio
+            try:
+                CONFIG_FILE.replace(CONFIG_FILE.with_name(f"player_config.corrompido-{int(time.time())}.json"))
+            except OSError:
+                pass
         now = time.time()
+        if not isinstance(self.data.get("dead"), dict):
+            self.data["dead"] = {}
         self.data["dead"] = {u: t for u, t in self.data["dead"].items() if now - t < DEAD_TTL}
 
     def __getitem__(self, k):
