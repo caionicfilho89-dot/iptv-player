@@ -28,8 +28,9 @@ try:
     if getattr(vlc, "dll", None) is None:
         raise ImportError
 except (ImportError, OSError, NotImplementedError):
-    sys.exit("VLC (64 bits) não encontrado. Instale em https://www.videolan.org/vlc/ e rode:\n"
-             "    pip install -r requirements.txt")
+    vlc = None  # main() avisa o usuário numa janela
+VLC_MISSING_MSG = ("O VLC (64 bits) não foi encontrado neste computador.\n\n"
+                   "Instale gratuitamente em https://www.videolan.org/vlc/ e abra o IPTV Player de novo.")
 
 from PyQt6.QtCore import QMargins, QObject, QPointF, QRect, QSize, Qt, QTimer, QUrl, pyqtSignal  # noqa: E402
 from PyQt6.QtGui import (  # noqa: E402
@@ -43,7 +44,8 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QSlider, QSpinBox, QSplitter, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget,
 )
 
-BASE = Path(__file__).resolve().parent
+# no .exe (PyInstaller) as playlists ficam ao lado do executável
+BASE = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
 LOGO_CACHE = BASE / ".cache" / "logos"
 CONFIG_FILE = BASE / "player_config.json"
 USER_AGENT = b"VLC/3.0.21 LibVLC/3.0.21"
@@ -450,11 +452,12 @@ class VideoFrame(QFrame):
         p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "📺\n" + self.message)
 
 
-def app_icon():
-    pm = QPixmap(64, 64)
+def app_icon(size=256):
+    pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.scale(size / 64, size / 64)  # desenho definido numa grade de 64x64
     g = QLinearGradient(0, 0, 64, 64)
     g.setColorAt(0, QColor(C["accent"]))
     g.setColorAt(1, QColor(C["accent2"]))
@@ -1111,6 +1114,10 @@ def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setStyleSheet(STYLE)
+    if vlc is None:
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.critical(None, "IPTV Player", VLC_MISSING_MSG)
+        sys.exit(1)
     w = MainWindow()
     w.show()
     sys.exit(app.exec())

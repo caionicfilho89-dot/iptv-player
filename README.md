@@ -20,7 +20,16 @@ pula os canais que estão fora do ar e tem um modo **zapping automático**.
 - **Tela cheia** com duplo clique ou F11
 - Abre de onde parou (último canal, volume, preferências)
 
-## 🚀 Como instalar
+## ⬇️ Download (jeito mais fácil)
+
+1. Instale o **[VLC 64 bits](https://www.videolan.org/vlc/)**, se ainda não tiver
+2. Baixe o **[IPTV-Player-Windows.zip](https://github.com/caionicfilho89-dot/iptv-player/releases/latest)** na página de Releases
+3. Extraia o ZIP e dê dois cliques em **`IPTV Player.exe`**. Não precisa instalar Python.
+
+> Se o Windows mostrar *"O Windows protegeu o computador"*, clique em **Mais informações → Executar assim mesmo**.
+> Isso acontece com programas novos sem assinatura digital.
+
+## 🐍 Rodando pelo código-fonte
 
 1. Instale o **[Python 3.10+](https://www.python.org/downloads/)** e marque *"Add Python to PATH"* na instalação
 2. Instale o **[VLC 64 bits](https://www.videolan.org/vlc/)**
