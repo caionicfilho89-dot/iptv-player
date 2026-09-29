@@ -276,6 +276,7 @@ class FullscreenOverlay(QWidget):
     exit_fs = pyqtSignal()
     mute = pyqtSignal()
     zap_toggled = pyqtSignal(bool)
+    captions_toggled = pyqtSignal(bool)
     volume_changed = pyqtSignal(int)
 
     def __init__(self):
@@ -304,6 +305,8 @@ class FullscreenOverlay(QWidget):
         self.next_btn = make_btn("next", "Próximo canal", self.next.emit, icon_color="white")
         self.zap_btn = make_btn("shuffle", "Zapping automático", kind="round", checkable=True, icon_color="white")
         self.zap_btn.toggled.connect(self.zap_toggled.emit)
+        self.cc_btn = make_btn("cc", "Legendas traduzidas (Ctrl+T)", kind="round", checkable=True, icon_color="white")
+        self.cc_btn.toggled.connect(self.captions_toggled.emit)
         self.mute_btn = make_btn("volume", "Mudo", self.mute.emit, icon_color="white")
         self.vol = QSlider(Qt.Orientation.Horizontal)
         self.vol.setRange(0, 125)
@@ -313,7 +316,7 @@ class FullscreenOverlay(QWidget):
         for w in (self.prev_btn, self.play_btn, self.next_btn):
             lay.addWidget(w)
         lay.addSpacing(10)
-        for w in (self.zap_btn, self.mute_btn, self.vol, self.exit_btn):
+        for w in (self.cc_btn, self.zap_btn, self.mute_btn, self.vol, self.exit_btn):
             lay.addWidget(w)
 
     def apply_style(self):

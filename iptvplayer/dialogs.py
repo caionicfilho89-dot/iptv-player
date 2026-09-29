@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 )
 
 from . import APP_VERSION
+from .captions import MODELS, SOURCE_LANGS
 from .config import DEFAULT_EPG_URLS
 from .theme import ACCENTS, T
 from .widgets import make_btn
@@ -84,6 +85,26 @@ class SettingsDialog(QDialog):
                            make_btn(None, "", lambda: self.epg_urls.setPlainText("\n".join(DEFAULT_EPG_URLS)),
                                     kind="", text="Restaurar padrão")))
 
+        lay.addWidget(QLabel("Legendas traduzidas por IA", objectName="h2"))
+        lay.addWidget(QLabel("A IA ouve o som do canal, reconhece a fala no seu computador e traduz para o "
+                             "português (Ctrl+T liga e desliga).", objectName="muted", wordWrap=True))
+        self.cap_model = QComboBox()
+        for key, (label, mb) in MODELS.items():
+            self.cap_model.addItem(f"{label} · {mb} MB", key)
+        self.cap_model.setCurrentIndex(max(0, self.cap_model.findData(cfg["cap_model"])))
+        self.cap_source = QComboBox()
+        for key, label in SOURCE_LANGS.items():
+            self.cap_source.addItem(label, key)
+        self.cap_source.setCurrentIndex(max(0, self.cap_source.findData(cfg["cap_source"])))
+        self.cap_scale = QComboBox()
+        for label, v in (("Pequena", 0.8), ("Média", 1.0), ("Grande", 1.25), ("Muito grande", 1.5)):
+            self.cap_scale.addItem(label, v)
+        self.cap_scale.setCurrentIndex(max(0, self.cap_scale.findData(cfg["cap_scale"])))
+        lay.addLayout(_row(QLabel("Qualidade da IA"), self.cap_model, QLabel("Idioma do canal"), self.cap_source))
+        self.cap_original = QCheckBox("Mostrar também a frase original")
+        self.cap_original.setChecked(cfg["cap_original"])
+        lay.addLayout(_row(QLabel("Tamanho da legenda"), self.cap_scale, self.cap_original))
+
         lay.addWidget(QLabel("Geral", objectName="h2"))
         self.check_upd = QCheckBox("Avisar quando houver uma nova versão do IPTV Player")
         self.check_upd.setChecked(cfg["check_updates"])
@@ -120,6 +141,10 @@ class SettingsDialog(QDialog):
         self.cfg["accent"] = self._accent()
         self.cfg["auto_update_lists"] = self.auto_update.isChecked()
         self.cfg["check_updates"] = self.check_upd.isChecked()
+        self.cfg["cap_model"] = self.cap_model.currentData()
+        self.cfg["cap_source"] = self.cap_source.currentData()
+        self.cfg["cap_scale"] = self.cap_scale.currentData()
+        self.cfg["cap_original"] = self.cap_original.isChecked()
         self._save_epg_fields()
         self.cfg.save()
         super().accept()

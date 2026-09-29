@@ -41,6 +41,8 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 - **Mosaico**: 2, 4 ou 9 canais ao mesmo tempo
 - **Gravar canal** e **tirar foto da tela**
 - **Timer para desligar** (ou ao fim do programa atual)
+- **Legendas traduzidas por IA** 🆕: canais em inglês, espanhol, francês e outros idiomas ganham legenda em
+  português ao vivo, como a tradução automática do YouTube (botão **CC** ou `Ctrl+T`)
 
 **Visual**
 - Modo **lista** ou **grade**, tema **escuro** ou **claro** e 6 cores de destaque
@@ -65,8 +67,19 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 | `Ctrl+R` | Gravar |
 | `Ctrl+P` | Janela flutuante |
 | `Ctrl+L` | Alternar lista / grade |
+| `Ctrl+T` | Legendas traduzidas por IA |
 
 Fotos vão para **Imagens\IPTV Player** e gravações para **Vídeos\IPTV Player**.
+
+## 💬 Legendas traduzidas por IA
+
+1. A IA ouve o som que está saindo do computador (por isso o som do player precisa estar ligado)
+2. O **[Whisper](https://github.com/SYSTRAN/faster-whisper)** reconhece a fala **no seu próprio PC**, sem enviar o áudio para a internet
+3. Só o texto reconhecido é enviado ao **Google Tradutor** para virar português
+
+Na primeira vez que você liga, o modelo de IA é baixado (cerca de 480 MB). Em **Configurações → Legendas
+traduzidas por IA** dá para escolher a qualidade (Rápido / Equilibrado / Preciso), fixar o idioma do canal,
+mudar o tamanho da legenda e mostrar também a frase original.
 
 ## 🐍 Rodando pelo código-fonte
 

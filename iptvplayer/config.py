@@ -22,6 +22,7 @@ DEFAULTS = {
     "epg_enabled": True, "epg_urls": DEFAULT_EPG_URLS,
     "check_updates": True, "last_update_check": 0, "latest_version": "",
     "mosaic_size": 2,
+    "captions": False, "cap_model": "small", "cap_source": "auto", "cap_original": False, "cap_scale": 1.0,
 }
 
 

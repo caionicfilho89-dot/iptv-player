@@ -16,6 +16,8 @@ RECURSOS
 - Modo lista ou grade, tema claro/escuro e 6 cores de destaque
 - Tela cheia com controles flutuantes, janela flutuante (PiP) e mosaico 2x2/3x3
 - Gravar canal, tirar foto da tela e timer para desligar
+- Legendas traduzidas por IA: canais de outros idiomas com legenda em português ao vivo
+  (botão CC ou Ctrl+T; na primeira vez baixa a IA, cerca de 480 MB)
 - Digite o número do canal para ir direto a ele
 
 ATALHOS
@@ -23,7 +25,7 @@ ATALHOS
 PgUp / PgDn ......... canal anterior / próximo
 F11 / duplo clique .. tela cheia (Esc para sair)
 Ctrl+F busca · Ctrl+D favorito · Ctrl+M mudo · Ctrl+Z zapping
-Ctrl+G guia · Ctrl+S foto · Ctrl+R gravar · Ctrl+P janela flutuante · Ctrl+L lista/grade
+Ctrl+G guia · Ctrl+S foto · Ctrl+R gravar · Ctrl+P janela flutuante · Ctrl+L lista/grade · Ctrl+T legendas
 
 Fotos vão para Imagens\IPTV Player e gravações para Vídeos\IPTV Player.
 

@@ -5,7 +5,7 @@ import random
 import re
 import time
 
-from PyQt6.QtCore import QByteArray, QEvent, QPoint, QSize, Qt, QTimer, QUrl
+from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRect, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QColor, QCursor, QDesktopServices, QFont, QGuiApplication, QKeySequence, QShortcut
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply
 from PyQt6.QtWidgets import (
@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 
 from . import APP_NAME, APP_VERSION, REPO
 from . import sources as src
+from .captions import CaptionWorker, SubtitleOverlay, missing_deps, video_rect_global
 from .config import Config
 from .dialogs import AddListDialog, GuideDialog, SettingsDialog
 from .epg import EpgManager
@@ -105,6 +106,10 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self.overlay = FullscreenOverlay()
         self._wire_overlay()
+        self.captions = None         # IA de legendas (carregada na primeira vez que é ligada)
+        self.subs = SubtitleOverlay(self)
+        self._apply_caption_prefs()
+        self.subs_timer = QTimer(self, interval=250, timeout=self._subs_tick)
         self.player.set_hwnd(int(self.video.winId()))
         self.player.video_set_mouse_input(False)
         self.player.video_set_key_input(False)
@@ -133,6 +138,8 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1500, lambda: self._reload_epg())
         QTimer.singleShot(4000, self._auto_update_lists)
         QTimer.singleShot(3000, self._check_updates)
+        if self.cfg["captions"]:
+            QTimer.singleShot(2500, lambda: self.cc_btn.setChecked(True))
 
     # ================================================================ interface
     def _build_ui(self):
@@ -338,6 +345,9 @@ class MainWindow(QMainWindow):
         self.info_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.info_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         auto.addWidget(self.info_lbl, 1)
+        self.cc_btn = make_btn("cc", "Legendas traduzidas por IA (Ctrl+T)", kind="tool", checkable=True,
+                               icon_size=18)
+        self.cc_btn.toggled.connect(self._toggle_captions)
         self.guide_btn = make_btn("guide", "Guia de programação (Ctrl+G)", self.open_guide, kind="tool", icon_size=18)
         self.snap_btn = make_btn("camera", "Tirar foto da tela (Ctrl+S)", self.snapshot, kind="tool", icon_size=18)
         self.rec_btn = make_btn("record", "Gravar canal (Ctrl+R)", self.toggle_record, kind="tool",
@@ -346,7 +356,7 @@ class MainWindow(QMainWindow):
         self.mosaic_btn = make_btn("mosaic", "Mosaico: vários canais ao mesmo tempo", self.open_mosaic,
                                    kind="tool", icon_size=18)
         self.sleep_btn = make_btn("timer", "Timer para desligar", self._sleep_menu, kind="tool", icon_size=18)
-        for b in (self.guide_btn, self.snap_btn, self.rec_btn, self.pip_btn, self.mosaic_btn, self.sleep_btn):
+        for b in (self.cc_btn, self.guide_btn, self.snap_btn, self.rec_btn, self.pip_btn, self.mosaic_btn, self.sleep_btn):
             auto.addWidget(b)
         self.sleep_lbl = QLabel("", objectName="muted")
         auto.addWidget(self.sleep_lbl)
@@ -377,6 +387,7 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        self._place_subs()
         if not self.fullscreen:
             self._set_compact(self._narrow_screen() or self.width() < COMPACT_BELOW)
 
@@ -400,6 +411,7 @@ class MainWindow(QMainWindow):
         sc("Ctrl+R", lambda: self.rec_btn.click())
         sc("Ctrl+P", self.enter_pip)
         sc("Ctrl+L", self._toggle_view_mode)
+        sc("Ctrl+T", self.cc_btn.toggle)
 
     def _escape(self):
         if self.num_buffer:
@@ -758,6 +770,9 @@ class MainWindow(QMainWindow):
             media.add_option(o)
         self.player.set_media(media)
         self.player.play()
+        if self.captions:
+            self.captions.reset()
+        self.subs.clear()
         self.started_at = time.monotonic()
         self.confirmed = False
         self.last_time, self.last_progress = -1, time.monotonic()
@@ -941,6 +956,7 @@ class MainWindow(QMainWindow):
         self._status = ("", "muted")
         set_btn_icon(self.play_btn, "play")
         self.video.set_message("Escolha um canal na lista")
+        self.subs.clear()
         self._update_now_info()
         self.view.viewport().update()
 
@@ -951,6 +967,7 @@ class MainWindow(QMainWindow):
             self.player.audio_set_mute(False)
         for b in (self.mute_btn, self.overlay.mute_btn):
             set_btn_icon(b, "mute" if v == 0 else "volume")
+        self._caption_sound_notice()
         for s in (self.vol, self.overlay.vol):
             if s.value() != v:
                 s.blockSignals(True)
@@ -962,6 +979,7 @@ class MainWindow(QMainWindow):
         self.player.audio_set_mute(m)
         for b in (self.mute_btn, self.overlay.mute_btn):
             set_btn_icon(b, "mute" if m else "volume")
+        self._caption_sound_notice(m)
 
     # ================================================================ zapping
     def _zap_pool(self):
@@ -1192,6 +1210,7 @@ class MainWindow(QMainWindow):
         o.exit_fs.connect(self.toggle_fullscreen)
         o.mute.connect(self.toggle_mute)
         o.zap_toggled.connect(self.zap_btn.setChecked)
+        o.captions_toggled.connect(self.cc_btn.setChecked)
         o.volume_changed.connect(self.vol.setValue)
         o.vol.setValue(self.vol.value())
         o.apply_style()
@@ -1255,6 +1274,8 @@ class MainWindow(QMainWindow):
             return
         self.player.stop()
         self.player.set_hwnd(int(self.video.winId()))
+        if self.subs.parentWidget() is pip:  # senão a legenda seria apagada junto com a janela flutuante
+            self.subs.set_owner(self)
         pip.closing = True
         pip.close()
         pip.deleteLater()
@@ -1297,6 +1318,103 @@ class MainWindow(QMainWindow):
             self.play(ch, force=True)
         else:
             self.stop()
+
+    # ================================================================ legendas traduzidas (IA)
+    def _toggle_captions(self, on):
+        if on and missing_deps():
+            self.cc_btn.setChecked(False)
+            QMessageBox.information(
+                self, "Legendas traduzidas",
+                "Esta versão do IPTV Player não inclui a IA de legendas.\n\n"
+                f"Para usar pelo código-fonte, instale:  pip install {' '.join(missing_deps())}")
+            return
+        for b in (self.cc_btn, self.overlay.cc_btn):
+            if b.isChecked() != on:
+                b.blockSignals(True)
+                b.setChecked(on)
+                b.blockSignals(False)
+        self.cfg["captions"] = on
+        if on:
+            if not self.captions:
+                self._start_caption_worker()
+            self.captions.set_active(True)
+            self.subs_timer.start()
+            self._place_subs()
+            self._caption_sound_notice()
+        else:
+            if self.captions:
+                self.captions.set_active(False)  # a IA continua carregada para religar na hora
+            self.subs_timer.stop()
+            self.subs.clear()
+
+    def _start_caption_worker(self):
+        w = CaptionWorker(self.cfg["cap_model"], self.cfg["cap_source"])
+        w.caption.connect(self._on_caption)
+        w.status.connect(self._on_caption_status)
+        w.failed.connect(self._on_caption_failed)
+        w.finished.connect(w.deleteLater)
+        self.captions = w
+        w.start()
+        w.set_active(self.cc_btn.isChecked())
+
+    def _stop_caption_worker(self, wait=False):
+        w, self.captions = self.captions, None
+        if w:
+            for sig in (w.caption, w.status, w.failed):
+                sig.disconnect()
+            w.stop()
+            if wait:
+                w.wait(4000)
+
+    def _on_caption(self, original, translated, _lang):
+        if self.cc_btn.isChecked():
+            self.subs.add(translated or original, original)
+
+    def _on_caption_status(self, text):
+        if self.cc_btn.isChecked():
+            self.subs.set_notice(text)
+
+    def _on_caption_failed(self, msg):
+        self._stop_caption_worker()
+        self.cc_btn.setChecked(False)
+        self._info(f"<span style='color:{T['bad']}'>{msg}</span>", 12)
+
+    def _caption_sound_notice(self, muted=None):
+        if not self.cc_btn.isChecked():
+            return
+        if muted is None:
+            muted = self.player.audio_get_mute() == 1
+        if muted or self.vol.value() == 0:
+            self.subs.set_notice("Som desligado: a IA precisa ouvir o canal para legendar")
+        elif self.subs.notice.startswith("Som desligado"):
+            self.subs.set_notice("")
+
+    def _apply_caption_prefs(self):
+        self.subs.scale = self.cfg["cap_scale"]
+        self.subs.show_original = self.cfg["cap_original"]
+        self.subs.video_rect = QRect()  # força refazer o layout com o novo tamanho
+        self._place_subs()
+
+    def _subs_tick(self):
+        self.subs.expire()
+        self._place_subs()
+
+    def _place_subs(self):
+        if not hasattr(self, "subs") or not self.cc_btn.isChecked():
+            return
+        if self.pip:
+            owner, video = self.pip, self.pip.video
+        elif self.mosaic or self.isMinimized() or not self.isVisible():
+            return self.subs.place(QRect())
+        else:
+            owner, video = self, self.video
+        if self.subs.parentWidget() is not owner:
+            self.subs.set_owner(owner)
+        rect = video_rect_global(video)
+        margin = 0
+        if self.fullscreen and self.overlay.isVisible():  # fica acima dos controles da tela cheia
+            margin = rect.bottom() - self.overlay.geometry().top() + 12
+        self.subs.place(rect, margin)
 
     # ================================================================ atualizações do app
     def _check_updates(self):
@@ -1343,7 +1461,13 @@ class MainWindow(QMainWindow):
         dlg.update_lists.connect(lambda: self.update_lists())
         dlg.reload_epg.connect(lambda: self._reload_epg(force=True))
         old_epg = (self.cfg["epg_enabled"], list(self.cfg["epg_urls"]))
+        old_ai = (self.cfg["cap_model"], self.cfg["cap_source"])
         dlg.exec()
+        self._apply_caption_prefs()
+        if self.captions and (self.cfg["cap_model"], self.cfg["cap_source"]) != old_ai:
+            self._stop_caption_worker()
+            if self.cc_btn.isChecked():
+                self._start_caption_worker()
         self.apply_theme(self.cfg["theme"], self.cfg["accent"])  # desfaz a prévia se não salvou
         if (self.cfg["epg_enabled"], self.cfg["epg_urls"]) != old_epg:
             self._reload_epg()
@@ -1351,6 +1475,9 @@ class MainWindow(QMainWindow):
     # ================================================================ encerramento
     def closeEvent(self, e):
         self.scanner.stop()
+        self.subs_timer.stop()
+        self._stop_caption_worker(wait=True)
+        self.subs.close()
         if self.recorder.active:
             self.recorder.stop()
         if self.mosaic:

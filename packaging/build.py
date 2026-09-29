@@ -36,6 +36,12 @@ def main():
          "--distpath", str(BUILD), "--workpath", str(BUILD / "work"), "--specpath", str(BUILD / "work"),
          *[a for m in ("PyQt6.QtWebEngineCore", "PyQt6.QtQml", "PyQt6.QtQuick", "PyQt6.QtPdf",
                        "PyQt6.QtMultimedia", "PyQt6.Qt3DCore", "tkinter") for a in ("--exclude-module", m)],
+         # legendas por IA: DLLs do CTranslate2, modelo VAD do faster-whisper e cabeçalho COM do soundcard
+         "--collect-binaries", "ctranslate2", "--collect-data", "faster_whisper", "--collect-data", "soundcard",
+         # bibliotecas pesadas que só entrariam por importações opcionais (conversores de modelos etc.)
+         *[a for m in ("torch", "torchvision", "torchaudio", "transformers", "tensorflow", "scipy", "pandas",
+                       "sklearn", "matplotlib", "PIL", "botocore", "boto3", "grpc", "sympy", "IPython",
+                       "ctranslate2.converters") for a in ("--exclude-module", m)],
          str(ROOT / "iptv_player.py")])
 
     for f in ROOT.glob("*.m3u"):

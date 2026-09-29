@@ -1,2 +1,5 @@
 PyQt6>=6.5
 python-vlc>=3.0
+# legendas traduzidas por IA
+faster-whisper>=1.1
+soundcard>=0.4.3
