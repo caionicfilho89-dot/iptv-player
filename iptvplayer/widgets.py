@@ -102,6 +102,21 @@ class _BaseDelegate(QStyledItemDelegate):
         parts = [ch.group, ch.quality, "não 24/7" if ch.not247 else "", "geo" if ch.geo else ""]
         return "  ·  ".join(x for x in parts if x), T["muted"]
 
+    def _new_badge(self, p, x, y, font, right=False):
+        """Selo "NOVO"; devolve a largura ocupada."""
+        f = QFont(font)
+        f.setPointSizeF(7)
+        f.setBold(True)
+        p.setFont(f)
+        w = p.fontMetrics().horizontalAdvance("NOVO") + 10
+        r = QRect(x - w if right else x, y, w, 15)
+        path = QPainterPath()
+        path.addRoundedRect(r.toRectF(), 7, 7)
+        p.fillPath(path, QColor(T["accent"]))
+        p.setPen(QColor("white"))
+        p.drawText(r, Qt.AlignmentFlag.AlignCenter, "NOVO")
+        return w
+
     def _status_color(self, ch):
         return {"ok": T["ok"], "dead": T["bad"], "loading": T["warn"]}.get(self.win.status_of(ch.url))
 
@@ -139,6 +154,8 @@ class ListDelegate(_BaseDelegate):
         self._logo(p, box, ch, option.font)
 
         right_w = 44
+        if self.win.is_new(ch.url):
+            right_w += self._new_badge(p, r.right() - 46, r.top() + 10, option.font, right=True) + 6
         tx = box.right() + 12
         name_rect = QRect(tx, r.top() + 8, r.right() - tx - right_w, 20)
         f = QFont(option.font)
@@ -213,6 +230,8 @@ class GridDelegate(_BaseDelegate):
         if self.win.is_fav(ch.url):
             p.drawPixmap(QRect(box.right() - 18, box.bottom() - 20, 16, 16),
                          icon("star_fill", "star", 16).pixmap(16, 16))
+        if self.win.is_new(ch.url):
+            self._new_badge(p, box.left() + 4, box.bottom() - 19, option.font)
 
         name_rect = QRect(r.left() + 9, box.bottom() + 7, r.width() - 18, 20)
         f = QFont(option.font)

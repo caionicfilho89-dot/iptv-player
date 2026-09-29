@@ -61,7 +61,7 @@ class SettingsDialog(QDialog):
         lay.addLayout(_row(*sw_row))
 
         lay.addWidget(QLabel("Canais", objectName="h2"))
-        self.auto_update = QCheckBox("Atualizar as listas de canais automaticamente (1× por semana)")
+        self.auto_update = QCheckBox("Atualizar as listas de canais automaticamente (todo dia) e marcar os canais novos")
         self.auto_update.setChecked(cfg["auto_update_lists"])
         lay.addWidget(self.auto_update)
         upd = cfg["lists_updated"]

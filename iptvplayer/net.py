@@ -5,6 +5,7 @@ from PyQt6.QtCore import QObject, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
+from .discovery import list_urls
 from .paths import LOGO_CACHE
 
 USER_AGENT = b"VLC/3.0.21 LibVLC/3.0.21"
@@ -158,6 +159,7 @@ class ListDownloader(QObject):
         super().__init__(parent)
         self.nam = QNetworkAccessManager(self)
         self.running = False
+        self.old_urls = {}                 # chave -> links da versão anterior (para achar canais novos)
 
     def start(self, jobs):
         """jobs: lista de (chave, url, caminho_destino)."""
@@ -182,6 +184,7 @@ class ListDownloader(QObject):
             try:
                 tmp = dest.with_suffix(".part")
                 tmp.write_bytes(data)
+                self.old_urls[key] = list_urls(dest) if dest.exists() else None
                 tmp.replace(dest)
             except OSError:
                 good = False

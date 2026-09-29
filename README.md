@@ -28,10 +28,13 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 - **Adicione suas próprias listas** por link (ex.: a da sua operadora de IPTV) ou arquivo `.m3u`
 - **Guia de programação (EPG)**: o que está passando agora e a seguir, com barra de progresso
 - Busca, filtro por grupo, favoritos ⭐ e recentes
+- **Listas atualizadas todo dia**, com os canais que chegaram marcados como **NOVO** e reunidos na categoria **Novos** 🆕
+- **Links quebrados trocados sozinhos** 🆕: se um canal cai, o app procura o mesmo canal em outro link (em qualquer lista), usa o que funcionar e lembra dele
 
 **Troca automática**
 - **Pular canais offline**: se o canal não abrir, der erro ou travar, vai para o próximo sozinho
 - **Zapping automático** a cada N segundos, em ordem ou aleatório, também **só pelos favoritos**
+- **Explorar** 🆕: passa sozinho por **todos os canais de todas as listas**, pulando os offline e os que você já viu; a lista rola acompanhando
 - **Testar lista**: descobre em segundo plano quais canais estão no ar
 - **Digite o número do canal** (como no controle remoto) para ir direto a ele
 
@@ -62,6 +65,7 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 | `Ctrl+D` | Favoritar canal atual |
 | `Ctrl+M` | Mudo |
 | `Ctrl+Z` | Liga/desliga o zapping |
+| `Ctrl+E` | Liga/desliga o modo Explorar |
 | `Ctrl+G` | Guia de programação |
 | `Ctrl+S` | Foto da tela |
 | `Ctrl+R` | Gravar |

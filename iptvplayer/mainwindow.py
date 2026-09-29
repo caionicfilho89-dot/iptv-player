@@ -4,6 +4,7 @@ import math
 import random
 import re
 import time
+from dataclasses import replace
 
 from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRect, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QColor, QCursor, QDesktopServices, QFont, QGuiApplication, QKeySequence, QShortcut
@@ -17,7 +18,8 @@ from PyQt6.QtWidgets import (
 from . import APP_NAME, APP_VERSION, REPO
 from . import sources as src
 from .captions import CaptionWorker, SubtitleOverlay, missing_deps, video_rect_global
-from .config import Config
+from .config import DEAD_TTL, Config
+from .discovery import MAX_ALT_TRIES, ExploredSet, LinkIndex, NewChannels, list_urls
 from .dialogs import AddListDialog, GuideDialog, SettingsDialog
 from .epg import EpgManager
 from .m3u import Channel, header_epg_urls, parse_m3u
@@ -35,7 +37,7 @@ from .widgets import (
 CONNECT_TIMEOUT = 15         # segundos para o canal começar a tocar
 STALL_TIMEOUT = 12           # segundos sem avançar = travado
 MAX_CONSECUTIVE_FAILS = 25   # evita loop infinito pulando canais
-LIST_MAX_AGE = 7 * 86400     # atualização automática das listas
+LIST_MAX_AGE = 86400          # atualização automática das listas (1× por dia)
 UPDATE_CHECK_EVERY = 12 * 3600
 COMPACT_BELOW = 1340         # largura da janela abaixo da qual a barra lateral vira só ícones
 LABEL_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -79,6 +81,7 @@ class MainWindow(QMainWindow):
         self.all_channels, self.visible, self.numbers = [], [], {}
         self.current = None
         self.session_status = {}     # url -> ok/loading/dead
+        self._dead_checked = time.time()
         self.fail_streak = 0
         self.fullscreen = False
         self.confirmed = False
@@ -98,6 +101,13 @@ class MainWindow(QMainWindow):
         self._was_maximized = False
         self._side_btns = []
         self._banner_tag = ""
+        self.links = LinkIndex()     # outros links do mesmo canal, para quando um cair
+        self.newch = NewChannels()   # canais que chegaram nas últimas atualizações
+        self.explored = ExploredSet()
+        self.stream = None           # (url, opções) realmente tocando; pode ser um link alternativo
+        self._alt_tried = set()
+        pos = self.cfg["explore_pos"]
+        self.explore_cat, self.explore_idx = (pos[0], pos[1]) if len(pos) == 2 else (None, -1)
 
         self.instance = vlc.Instance(["--no-video-title-show", "--network-caching=1500", "--quiet",
                                       "--sub-source=marq"])
@@ -137,6 +147,8 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(400, lambda: self.play(last))
         QTimer.singleShot(1500, lambda: self._reload_epg())
         QTimer.singleShot(4000, self._auto_update_lists)
+        self.list_timer = QTimer(self, interval=3600 * 1000, timeout=self._auto_update_lists)
+        self.list_timer.start()  # app aberto por muito tempo também recebe os links novos
         QTimer.singleShot(3000, self._check_updates)
         if self.cfg["captions"]:
             QTimer.singleShot(2500, lambda: self.cc_btn.setChecked(True))
@@ -336,6 +348,11 @@ class MainWindow(QMainWindow):
         self.zap_favs_cb.setChecked(self.cfg["zap_favs"])
         self.zap_favs_cb.toggled.connect(lambda val: self.cfg.__setitem__("zap_favs", val))
         auto.addWidget(self.zap_favs_cb)
+        self.explore_btn = make_btn("compass", "Explorar: passa sozinho por todos os canais de todas as listas, "
+                                    "pulando os offline e os que você já viu (Ctrl+E)", kind="",
+                                    text="  Explorar", checkable=True, icon_size=17)
+        self.explore_btn.toggled.connect(self._toggle_explore)
+        auto.addWidget(self.explore_btn)
         self.zap_lbl = QLabel("", objectName="muted")
         self.zap_lbl.setMinimumWidth(30)
         auto.addWidget(self.zap_lbl)
@@ -376,6 +393,7 @@ class MainWindow(QMainWindow):
         self._compact = compact
         self.sidebar.setFixedWidth(64 if compact else 224)
         self.zap_btn.setText("" if compact else "  Zapping")
+        self.explore_btn.setText("" if compact else "  Explorar")
         for b, text in self._side_btns:
             b.setText("" if compact else "  " + text)
             b.setToolTip(text if compact else "")
@@ -412,6 +430,7 @@ class MainWindow(QMainWindow):
         sc("Ctrl+P", self.enter_pip)
         sc("Ctrl+L", self._toggle_view_mode)
         sc("Ctrl+T", self.cc_btn.toggle)
+        sc("Ctrl+E", self.explore_btn.toggle)
 
     def _escape(self):
         if self.num_buffer:
@@ -473,6 +492,7 @@ class MainWindow(QMainWindow):
 
         add(src.FAV_KEY, "Favoritos", "star")
         add(src.RECENT_KEY, "Recentes", "clock")
+        add(src.NEW_KEY, f"Novos ({len(self.newch)})" if len(self.newch) else "Novos", "sparkle")
         section("Canais")
         for key, label, ic in src.builtin_entries():
             add(key, label, ic)
@@ -493,7 +513,7 @@ class MainWindow(QMainWindow):
     def _nav_menu(self, pos):
         it = self.nav.itemAt(pos)
         key = it.data(Qt.ItemDataRole.UserRole) if it else None
-        if not key or key in (src.FAV_KEY, src.RECENT_KEY):
+        if not key or key in src.SPECIAL_KEYS:
             return
         m = QMenu(self)
         custom = self.cfg["custom_sources"]
@@ -518,6 +538,8 @@ class MainWindow(QMainWindow):
             return [Channel.from_dict(f) for f in self.cfg["favorites"]]
         if key == src.RECENT_KEY:
             return [Channel.from_dict(f) for f in self.cfg["recents"]]
+        if key == src.NEW_KEY:
+            return self.newch.channels()
         if key not in self.playlists:
             path = src.file_for(key, self.cfg["custom_sources"])
             if path is None:
@@ -544,7 +566,7 @@ class MainWindow(QMainWindow):
         self.category = key
         self.all_channels = self._load_category(key)
         self.numbers = {c.url: i + 1 for i, c in enumerate(self.all_channels)}
-        if key not in (src.FAV_KEY, src.RECENT_KEY):
+        if key not in src.SPECIAL_KEYS:
             self.cfg["last_category"] = key
         self.cat_title.setText(self._label_for(key))
         groups = sorted({c.group for c in self.all_channels if c.group})
@@ -579,6 +601,8 @@ class MainWindow(QMainWindow):
             txt += f"  ·  {dead} offline"
         if not self.all_channels and self.category == src.FAV_KEY:
             txt = "Sem favoritos ainda — use a estrela ★"
+        if not self.all_channels and self.category == src.NEW_KEY:
+            txt = "Nenhum canal novo nos últimos 3 dias"
         self.count_lbl.setText(txt)
 
     def _select_current_in_view(self):
@@ -642,6 +666,7 @@ class MainWindow(QMainWindow):
             jobs = [(k, src.download_url(k, custom), src.cache_path(k, custom))
                     for k in keys if src.download_url(k, custom)]
         self._dl_all = keys is None
+        self._new_found = 0
         if jobs:
             self._side_status(f"Atualizando listas… 0/{len(jobs)}")
             self.upd_btn.setEnabled(False)
@@ -650,6 +675,16 @@ class MainWindow(QMainWindow):
     def _on_list_done(self, key, ok):
         if not ok:
             return
+        old = self.downloader.old_urls.pop(key, None)
+        if old is None and not key.startswith(src.CUSTOM_PREFIX):
+            old = list_urls(src.BASE / f"{key}.m3u")  # 1ª atualização: compara com a lista que veio no programa
+        path = src.cache_path(key, self.cfg["custom_sources"])
+        if old and path.exists():
+            try:
+                fresh = [c for c in parse_m3u(path)[0] if c.url not in old]
+                self._new_found += self.newch.record(fresh)
+            except OSError:
+                pass
         self.playlists.pop(key, None)
         if key == self.category:
             self._select_category(key, from_nav=None)
@@ -664,6 +699,16 @@ class MainWindow(QMainWindow):
         msg = f"{ok} lista(s) atualizada(s)" if ok else "Não foi possível atualizar (sem internet?)"
         if ok and fail:
             msg += f", {fail} com erro"
+        if ok:
+            self.links.invalidate()
+            self.newch.save()
+            self._build_nav()
+            if self.category == src.NEW_KEY:
+                self._select_category(src.NEW_KEY, from_nav=None)
+        if self._new_found:
+            msg += f" · ✨ {self._new_found} canais novos (veja em Novos)"
+            self._info(f"✨ <b>{self._new_found} canais novos</b> chegaram nas listas — veja na categoria "
+                       "<b>Novos</b>.", 12)
         self._side_status(msg)
         QTimer.singleShot(8000, lambda: self.side_lbl.text() == msg and self._side_status(""))
         self._reload_epg()
@@ -733,9 +778,23 @@ class MainWindow(QMainWindow):
 
     # ================================================================ estado
     def status_of(self, url):
-        if url in self.session_status:
-            return self.session_status[url]
-        return "dead" if url in self.cfg["dead"] else None
+        st = self.session_status.get(url)
+        if st not in (None, "dead"):
+            return st
+        t = self.cfg["dead"].get(url)  # a marca de offline vence sozinha depois de DEAD_TTL
+        return "dead" if t and time.time() - t < DEAD_TTL else None
+
+    def _expire_dead(self):
+        """Canais cuja marca de offline venceu voltam para a lista (e para o zapping)."""
+        if not self.cfg.prune_dead():
+            return
+        for u in [u for u, st in self.session_status.items() if st == "dead" and u not in self.cfg["dead"]]:
+            del self.session_status[u]
+        if self.hide_dead_cb.isChecked():
+            self._apply_filter()
+        else:
+            self._update_count()
+            self.view.viewport().update()
 
     def _mark(self, url, st):
         self.session_status[url] = st
@@ -745,6 +804,9 @@ class MainWindow(QMainWindow):
             self.cfg["dead"].pop(url, None)
         self.view.viewport().update()
 
+    def is_new(self, url):
+        return self.newch.is_new(url)
+
     def is_fav(self, url):
         return any(f["url"] == url for f in self.cfg["favorites"])
 
@@ -753,7 +815,8 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(seconds * 1000, lambda: self.info_lbl.text() == html and self.info_lbl.setText(""))
 
     # ================================================================ reprodução
-    def play(self, ch, auto=False, force=False):
+    def play(self, ch, auto=False, force=False, stream=None):
+        """stream = (url, opções) de um link alternativo; sem ele usa o link da lista (ou o que já substituiu)."""
         if ch is None:
             return
         if (not force and self.current and ch.url == self.current.url
@@ -765,8 +828,13 @@ class MainWindow(QMainWindow):
             self.fail_streak = 0
         self.current = ch
         self.retried = False
-        media = self.instance.media_new(ch.url)
-        for o in ch.opts:
+        if stream is None:
+            self._alt_tried = set()
+            fix = self.cfg["alt_links"].get(ch.url)
+            stream = (fix["url"], fix["opts"]) if fix else (ch.url, ch.opts)
+        self.stream = stream
+        media = self.instance.media_new(stream[0])
+        for o in stream[1]:
             media.add_option(o)
         self.player.set_media(media)
         self.player.play()
@@ -790,7 +858,7 @@ class MainWindow(QMainWindow):
 
     def _replay(self):
         if self.current:
-            self.play(self.current, auto=True, force=True)
+            self.play(self.current, auto=True, force=True, stream=self.stream)
 
     def _update_now_info(self):
         ch = self.current
@@ -868,6 +936,9 @@ class MainWindow(QMainWindow):
                 self.fail_streak = 0
                 self.last_time, self.last_progress = t, now
                 self._mark(self.current.url, "ok")
+                self._remember_stream()
+                if self.explore_btn.isChecked():
+                    self.explored.add(self.current.url)
                 self._set_status("● Ao vivo", "ok")
                 self.video.set_message("")
                 self.player.audio_set_volume(self.vol.value())
@@ -894,7 +965,17 @@ class MainWindow(QMainWindow):
 
     def _on_fail(self, reason):
         ch = self.current
+        if not self.explore_btn.isChecked() and self._try_alternative(ch):
+            return
         self._mark(ch.url, "dead")
+        if self.explore_btn.isChecked():
+            self.player.stop()
+            self._set_status(f"✕ Offline ({reason}) — explorando o próximo…", "bad")
+            self.video.set_message(f"{ch.name} está offline — indo para o próximo…")
+            self.confirmed = True
+            self.last_progress = float("inf")
+            QTimer.singleShot(350, lambda: self.current is ch and self._explore_next())
+            return
         self._update_count()
         self.player.stop()
         self.fail_streak += 1
@@ -913,6 +994,41 @@ class MainWindow(QMainWindow):
             self.current = None
             self._update_now_info()
             self.view.viewport().update()
+
+    # ================================================================ links alternativos
+    def _link_files(self):
+        keys = [k for k, *_ in src.builtin_entries()] + [src.custom_key(s) for s in self.cfg["custom_sources"]]
+        return [p for p in (src.file_for(k, self.cfg["custom_sources"]) for k in keys) if p]
+
+    def _try_alternative(self, ch):
+        """Canal caiu: procura o mesmo canal em outro link (de qualquer lista) antes de desistir."""
+        self._alt_tried.add(self.stream[0])
+        if len(self._alt_tried) > MAX_ALT_TRIES:
+            return False
+        if self.links.by_key is None:
+            self._set_status("↻ Procurando outro link deste canal…", "warn")
+            QApplication.processEvents()
+            self.links.build(self._link_files())
+        alts = self.links.alternatives(ch, self._alt_tried, lambda u: self.status_of(u) == "dead")
+        if not alts:
+            return False
+        alt = alts[0]
+        self._alt_tried.add(alt.url)
+        self.play(ch, auto=True, force=True, stream=(alt.url, alt.opts))
+        self._set_status(f"↻ Link fora do ar — tentando outro ({len(self._alt_tried) - 1}/{MAX_ALT_TRIES})…", "warn")
+        return True
+
+    def _remember_stream(self):
+        """Guarda o link que funcionou para o canal abrir direto por ele da próxima vez."""
+        ch, (url, opts) = self.current, self.stream
+        known = self.cfg["alt_links"]
+        if url != ch.url:
+            if known.get(ch.url, {}).get("url") != url:
+                known[ch.url] = {"url": url, "opts": list(opts)}
+                self._info(f"Link de <b>{ch.name}</b> estava fora do ar: trocado automaticamente por outro "
+                           "que funciona.", 8)
+        elif ch.url in known:
+            known.pop(ch.url)  # o link original voltou
 
     def step(self, delta, auto=False, random_pick=False, pool=None):
         seq = pool if pool else self.visible
@@ -949,6 +1065,7 @@ class MainWindow(QMainWindow):
 
     def stop(self):
         self.player.stop()
+        self.explore_btn.setChecked(False)
         if self.current and self.session_status.get(self.current.url) == "loading":
             self.session_status.pop(self.current.url)
         self.current = None
@@ -988,6 +1105,8 @@ class MainWindow(QMainWindow):
         return None
 
     def _toggle_zap(self, on):
+        if on and self.explore_btn.isChecked():
+            self.explore_btn.setChecked(False)
         self.zap_bar.setVisible(on)
         if self.overlay.zap_btn.isChecked() != on:
             self.overlay.zap_btn.blockSignals(True)
@@ -1002,26 +1121,87 @@ class MainWindow(QMainWindow):
         self._zap_render()
 
     def _zap_tick(self):
-        if not self.zap_btn.isChecked() or not self.current or not self.confirmed:
+        exploring = self.explore_btn.isChecked()
+        if not (self.zap_btn.isChecked() or exploring) or not self.current or not self.confirmed:
             return  # só conta tempo enquanto o canal está realmente tocando
         if self.player.get_state() == vlc.State.Paused:
             return
         self.zap_left -= 1
         if self.zap_left <= 0:
-            self.step(+1, auto=True, random_pick=self.zap_mode.currentIndex() == 1, pool=self._zap_pool())
+            if exploring:
+                self._explore_next()
+            else:
+                self.step(+1, auto=True, random_pick=self.zap_mode.currentIndex() == 1, pool=self._zap_pool())
         self._zap_render()
 
     def _zap_render(self):
         total = self.zap_spin.value()
         self.zap_bar.setRange(0, total)
         self.zap_bar.setValue(max(0, total - self.zap_left))
-        if self.zap_btn.isChecked():
+        if self.zap_btn.isChecked() or self.explore_btn.isChecked():
             self.zap_lbl.setText(f"{max(0, self.zap_left)}s")
+
+    # ================================================================ modo Explorar
+    def _toggle_explore(self, on):
+        if on and self.zap_btn.isChecked():
+            self.zap_btn.setChecked(False)
+        self.zap_bar.setVisible(on)
+        if on:
+            self._explore_next()
+        else:
+            self.zap_lbl.setText("")
+            self.info_lbl.setText("")
+            self.explored.save()
+        self._zap_render()
+
+    def _explore_order(self):
+        return [k for k, *_ in src.builtin_entries()] + [src.custom_key(s) for s in self.cfg["custom_sources"]]
+
+    def _explore_next(self, restarted=False):
+        """Próximo canal ainda não visto, atravessando todas as listas; a lista rola acompanhando."""
+        order = self._explore_order()
+        if self.explore_cat not in order:
+            self.explore_cat = self.category if self.category in order else order[0]
+            self.explore_idx = -1
+        first = order.index(self.explore_cat)
+        cur_url = self.current.url if self.current else None
+        for step_n in range(len(order) + 1):
+            key = order[(first + step_n) % len(order)]
+            chans = self._load_category(key)
+            start = self.explore_idx + 1 if step_n == 0 else 0
+            for i in range(start, len(chans)):
+                c = chans[i]
+                if c.url in self.explored or c.url == cur_url or self.status_of(c.url) == "dead":
+                    continue
+                self.explore_cat, self.explore_idx = key, i
+                self.cfg["explore_pos"] = [key, i]
+                if self.category != key or self.search.text() or self.group_box.currentIndex() > 0:
+                    self.search.blockSignals(True)
+                    self.search.clear()
+                    self.search.blockSignals(False)
+                    self.group_box.setCurrentIndex(0)
+                    self._select_category(key)
+                self.play(c, auto=True, force=True)
+                self._select_current_in_view()
+                self.info_lbl.setText(f"<span style='color:{T['accent']}'>🧭 Explorando</span> "
+                                      f"<b>{self._label_for(key)}</b> · canal {i + 1} de {len(chans)} · "
+                                      f"{len(self.explored)} já vistos")
+                return
+        if restarted:
+            self.explore_btn.setChecked(False)
+            return self._info("Nenhum canal disponível para explorar agora (listas ainda baixando?).")
+        self.explored.clear()
+        self.explore_cat, self.explore_idx = order[0], -1
+        self._info("🎉 Você já explorou todos os canais! Recomeçando do início.", 10)
+        self._explore_next(restarted=True)
 
     # ================================================================ relógio (1s): zapping, timer, gravação, EPG
     def _clock_tick(self):
         self._zap_tick()
         now = time.time()
+        if now - self._dead_checked >= 600:
+            self._dead_checked = now
+            self._expire_dead()
         if self.sleep_deadline:
             rem = self.sleep_deadline - now
             if rem <= 0:
@@ -1127,6 +1307,8 @@ class MainWindow(QMainWindow):
     def record_channel(self, ch):
         if self.recorder.active:
             self.recorder.stop()
+        if self.current and ch.url == self.current.url and self.stream:
+            ch = replace(ch, url=self.stream[0], opts=list(self.stream[1]))  # grava o link que está funcionando
         self.recorder.start(ch)
         self.rec_btn.setChecked(True)
 
@@ -1298,6 +1480,7 @@ class MainWindow(QMainWindow):
             return self._info("Poucos canais disponíveis nesta lista para o mosaico.")
         if self.zap_btn.isChecked():
             self.zap_btn.setChecked(False)
+        self.explore_btn.setChecked(False)
         self._mosaic_prev = self.current
         self.player.stop()
         self.current = None
@@ -1489,6 +1672,8 @@ class MainWindow(QMainWindow):
         self.player.stop()
         if self.fullscreen:
             self.showNormal()
+        self.explored.save()
+        self.newch.save()
         self.cfg["geometry"] = bytes(self.saveGeometry().toHex()).decode()
         self.cfg.save()
         super().closeEvent(e)

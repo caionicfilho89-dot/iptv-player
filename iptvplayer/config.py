@@ -22,6 +22,7 @@ DEFAULTS = {
     "epg_enabled": True, "epg_urls": DEFAULT_EPG_URLS,
     "check_updates": True, "last_update_check": 0, "latest_version": "",
     "mosaic_size": 2,
+    "alt_links": {}, "explore_pos": [],
     "captions": False, "cap_model": "small", "cap_source": "auto", "cap_original": False, "cap_scale": 1.0,
 }
 
@@ -43,10 +44,17 @@ class Config:
                 CONFIG_FILE.replace(CONFIG_FILE.with_name(f"player_config.corrompido-{int(time.time())}.json"))
             except OSError:
                 pass
-        now = time.time()
         if not isinstance(self.data.get("dead"), dict):
             self.data["dead"] = {}
-        self.data["dead"] = {u: t for u, t in self.data["dead"].items() if now - t < DEAD_TTL}
+        self.prune_dead()
+
+    def prune_dead(self):
+        """Esquece as marcas de offline vencidas; devolve quantos canais voltaram."""
+        now, dead = time.time(), self.data["dead"]
+        expired = [u for u, t in dead.items() if not isinstance(t, (int, float)) or now - t >= DEAD_TTL]
+        for u in expired:
+            del dead[u]
+        return len(expired)
 
     def __getitem__(self, k):
         return self.data[k]

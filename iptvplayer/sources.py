@@ -5,13 +5,16 @@ from pathlib import Path
 from .paths import BASE, LIST_CACHE
 
 IPTV_ORG = "https://iptv-org.github.io/iptv/"
-FAV_KEY, RECENT_KEY = "__fav", "__recent"
+FAV_KEY, RECENT_KEY, NEW_KEY = "__fav", "__recent", "__new"
+SPECIAL_KEYS = (FAV_KEY, RECENT_KEY, NEW_KEY)
 CUSTOM_PREFIX = "custom:"
 
 # chave (= nome do .m3u), rótulo, ícone, caminho no iptv-org (None = só local)
 BUILTIN = [
     ("melhor_iptv", "Todos (melhores)", "tv", None),
+    ("todos", "Todos os canais", "globe", "index.m3u"),
     ("brasil", "Brasil", "flag", "countries/br.m3u"),
+    ("portugal", "Portugal", "flag", "countries/pt.m3u"),
     ("português", "Português", "chat", "languages/por.m3u"),
     ("filmes", "Filmes", "film", "categories/movies.m3u"),
     ("series", "Séries", "layers", "categories/series.m3u"),
