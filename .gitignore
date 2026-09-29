@@ -1,5 +1,6 @@
 # configurações pessoais (favoritos, recentes, volume)
 player_config.json
+player_config.corrompido-*.json
 # cache de logos
 .cache/
 __pycache__/
