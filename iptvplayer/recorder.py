@@ -20,6 +20,10 @@ def safe_name(name):
     return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", name).strip()[:60] or "canal"
 
 
+def clip_path(ch, ext=".ts"):
+    return _user_dir("videos") / f"{safe_name(ch.name)}_trecho_{time.strftime('%Y-%m-%d_%H-%M-%S')}{ext}"
+
+
 def snapshot_path(ch):
     return _user_dir("pictures") / f"{safe_name(ch.name)}_{time.strftime('%Y-%m-%d_%H-%M-%S')}.png"
 

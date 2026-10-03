@@ -5,6 +5,7 @@ import random
 import re
 import time
 from dataclasses import replace
+from pathlib import Path
 
 from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRect, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QColor, QCursor, QDesktopServices, QFont, QGuiApplication, QKeySequence, QShortcut
@@ -29,7 +30,7 @@ from .m3u import Channel, header_epg_urls, parse_m3u
 from .mosaic import MosaicWindow
 from .net import ListDownloader, LogoLoader, Scanner, make_request
 from .pip import PipWindow
-from .recorder import Recorder, snapshot_path
+from .recorder import Recorder, clip_path, snapshot_path
 from .timeshift import LIVE_DELAY_OPT, START_WAIT_MS, Timeshift, supports as timeshift_supports
 from .updater import UpdateDownloader, can_self_update, run_installer, setup_asset
 from .theme import T, app_icon, apply_theme, build_style, icon
@@ -125,6 +126,7 @@ class MainWindow(QMainWindow):
         self.timeshift = Timeshift(self.cfg["timeshift_minutes"], self)
         self.timeshift.ready.connect(self._ts_ready)
         self.timeshift.failed.connect(self._ts_failed)
+        self.timeshift.exported.connect(self._clip_saved)
         self._ts_sid = None          # sessão do buffer do canal atual (None = tocando direto)
         self._ts_origin = 0.0        # início (s) do pedaço em que a mídia atual do VLC começou
         self._paused_at = None       # ponto (ms) em que a pausa com buffer começou
@@ -339,7 +341,8 @@ class MainWindow(QMainWindow):
         self.back_btn = make_btn("back", "Voltar 30 segundos (Ctrl+←)", lambda: self.seek_relative(-30))
         self.fwd_btn = make_btn("forward", "Avançar 30 segundos (Ctrl+→)", lambda: self.seek_relative(+30))
         self.live_btn = make_btn("live", "Ir para o ao vivo (Ctrl+End)", self.go_live)
-        for b in (self.back_btn, self.fwd_btn, self.live_btn):
+        self.clip_btn = make_btn("film", "Salvar em vídeo o que acabou de passar", self._clip_menu)
+        for b in (self.back_btn, self.fwd_btn, self.live_btn, self.clip_btn):
             b.setEnabled(False)
             top.addWidget(b)
         top.addSpacing(14)
@@ -1001,9 +1004,36 @@ class MainWindow(QMainWindow):
 
     def _ts_buttons(self):
         on = self._ts_active()
-        for b in (self.back_btn, self.fwd_btn, self.live_btn):
+        for b in (self.back_btn, self.fwd_btn, self.live_btn, self.clip_btn):
             b.setEnabled(on)
         self.seek_row.setVisible(on)
+
+    def _clip_menu(self):
+        if not self._ts_active():
+            return
+        start, _end = self.timeshift.span()
+        pos = self._paused_at if self._paused_at is not None else self._ts_pos()
+        kept = pos - start
+        menu = QMenu(self)
+        for minutes in (1, 5, 10, 30):
+            act = menu.addAction(f"Últimos {minutes} minuto{'s' if minutes > 1 else ''}")
+            act.setEnabled(kept >= minutes * 60 * 0.5)
+            act.triggered.connect(lambda _c=False, m=minutes: self._save_clip(pos - m * 60, pos))
+        menu.addAction(f"Tudo o que foi guardado ({int(kept // 60)} min {int(kept % 60)} s)",
+                       lambda: self._save_clip(start, pos))
+        menu.exec(QCursor.pos())
+
+    def _save_clip(self, start, end):
+        ext = ".mp4" if self.timeshift.session and self.timeshift.session._map else ".ts"
+        path = clip_path(self.current, ext)
+        self._info("Salvando o trecho…", 4)
+        self.timeshift.export(max(0.0, start), end, path)
+
+    def _clip_saved(self, path, error):
+        if error:
+            return self._info(f"<span style='color:{T['bad']}'>Não deu para salvar o trecho: {error}</span>", 10)
+        folder = QUrl.fromLocalFile(str(Path(path).parent)).toString()
+        self._info(f"Trecho salvo em Vídeos · <a href='{folder}' style='color:{T['accent']}'>abrir pasta</a>", 10)
 
     @staticmethod
     def _fmt_behind(sec):

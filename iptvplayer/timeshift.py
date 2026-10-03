@@ -251,6 +251,26 @@ class Session(threading.Thread):
             lines += [f"#EXTINF:{dur:.3f},", f"/{self.sid}/{path.name}"]
         return "\n".join(lines) + "\n"
 
+    def export(self, start, end, dest):
+        """Junta os pedaços entre start e end (segundos desde que o canal abriu) num arquivo de vídeo.
+
+        Pedaços .ts emendados formam um .ts válido; nos fMP4 o cabeçalho (EXT-X-MAP) vai no começo."""
+        with self.lock:
+            segs = [s for s in self.segments if s[4] + s[1] > start and s[4] < end]
+        if not segs:
+            raise ValueError("nada guardado nesse intervalo")
+        if any(s[5] and "METHOD=NONE" not in s[5] for s in segs):
+            raise ValueError("este canal é criptografado e não pode ser salvo")
+        with open(dest, "wb") as out:
+            cmap = segs[0][6]
+            if cmap:
+                uri = re.search(r'URI="([^"]*)"', cmap).group(1)
+                out.write(self._get(uri, binary=True)[0])
+            for s in segs:
+                if s[2].exists():
+                    out.write(s[2].read_bytes())
+        return sum(s[1] for s in segs)
+
     def file(self, name):
         p = self.dir / name
         return p if p.parent == self.dir and p.exists() else None
@@ -264,6 +284,7 @@ class Timeshift(QObject):
     """Servidor local + sessão do canal atual."""
     ready = pyqtSignal(int, str)     # sessão, endereço local para o VLC
     failed = pyqtSignal(int)
+    exported = pyqtSignal(str, str)  # arquivo salvo, mensagem de erro ("" = deu certo)
 
     def __init__(self, max_minutes=60, parent=None):
         super().__init__(parent)
@@ -335,6 +356,22 @@ class Timeshift(QObject):
     def target(self):
         s = self.session
         return s.target if s else 6
+
+    def export(self, start, end, dest):
+        """Salva o trecho em segundo plano; avisa pelo sinal exported."""
+        s = self.session
+        if not s:
+            return self.exported.emit("", "o canal não está sendo guardado")
+
+        def work():
+            try:
+                secs = s.export(start, end, dest)
+                log.info("Timeshift: salvos %.0f s em %s", secs, dest)
+                self.exported.emit(str(dest), "")
+            except Exception as e:  # noqa: BLE001
+                log.warning("Timeshift: não foi possível salvar o trecho: %s", e)
+                self.exported.emit("", str(e))
+        threading.Thread(target=work, name="timeshift-salvar", daemon=True).start()
 
     def url_at(self, pos):
         """(endereço local que começa no pedaço com o instante pos, início desse pedaço)."""
