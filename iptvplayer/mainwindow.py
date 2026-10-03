@@ -123,7 +123,7 @@ class MainWindow(QMainWindow):
         self.overlay = FullscreenOverlay()
         self._wire_overlay()
         self.updater = None          # download da versão nova (atualização com um clique)
-        self.timeshift = Timeshift(self.cfg["timeshift_minutes"], self)
+        self.timeshift = Timeshift(self.cfg["timeshift_minutes"], self.instance, self)
         self.timeshift.ready.connect(self._ts_ready)
         self.timeshift.failed.connect(self._ts_failed)
         self.timeshift.exported.connect(self._clip_saved)
@@ -1024,7 +1024,7 @@ class MainWindow(QMainWindow):
         menu.exec(QCursor.pos())
 
     def _save_clip(self, start, end):
-        ext = ".mp4" if self.timeshift.session and self.timeshift.session._map else ".ts"
+        ext = ".mp4" if self.timeshift.fmp4() and not self.timeshift.session.audio else ".ts"
         path = clip_path(self.current, ext)
         self._info("Salvando o trecho…", 4)
         self.timeshift.export(max(0.0, start), end, path)
