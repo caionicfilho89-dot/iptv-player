@@ -291,7 +291,7 @@ class LocalTranslator:
                                       max_decoding_length=256)
         out = [self.tok.decode([self.tok.token_to_id(t) for t in r.hypotheses[0][1:]], skip_special_tokens=True)
                for r in res]
-        return re.sub(r"\s+([.,!?;:…])", r"", " ".join(o.strip() for o in out if o.strip()))
+        return re.sub(r"\s+([.,!?;:…])", r"\1", " ".join(o.strip() for o in out if o.strip()))
 
 
 class Segmenter:
