@@ -22,11 +22,13 @@ from .config import DEAD_TTL, Config
 from .discovery import MAX_ALT_TRIES, ExploredSet, LinkIndex, NewChannels, list_urls
 from .dialogs import AddListDialog, GuideDialog, SettingsDialog
 from .epg import EpgManager
+from .log import log
 from .m3u import Channel, header_epg_urls, parse_m3u
 from .mosaic import MosaicWindow
 from .net import ListDownloader, LogoLoader, Scanner, make_request
 from .pip import PipWindow
 from .recorder import Recorder, snapshot_path
+from .updater import UpdateDownloader, can_self_update, run_installer, setup_asset
 from .theme import T, app_icon, apply_theme, build_style, icon
 from .vlcload import vlc
 from .widgets import (
@@ -116,6 +118,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self.overlay = FullscreenOverlay()
         self._wire_overlay()
+        self.updater = None          # download da versão nova (atualização com um clique)
         self.captions = None         # IA de legendas (carregada na primeira vez que é ligada)
         self.subs = SubtitleOverlay(self)
         self._apply_caption_prefs()
@@ -175,7 +178,7 @@ class MainWindow(QMainWindow):
         self.nav.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.nav.customContextMenuRequested.connect(self._nav_menu)
         sl.addWidget(self.nav, 1)
-        self.update_banner = make_btn("download", "", self._open_update_page, kind="banner", icon_color="white",
+        self.update_banner = make_btn("download", "", self._update_clicked, kind="banner", icon_color="white",
                                       icon_size=16)
         self.update_banner.hide()
         sl.addWidget(self.update_banner)
@@ -329,6 +332,11 @@ class MainWindow(QMainWindow):
                                 text="  Zapping", checkable=True, icon_size=17)
         self.zap_btn.toggled.connect(self._toggle_zap)
         auto.addWidget(self.zap_btn)
+        self.minute_btn = make_btn("next", "Rolagem automática: passa para o próximo canal da lista "
+                                   "a cada 1 minuto (Ctrl+Shift+Z)", kind="", text=" 1 min",
+                                   checkable=True, icon_size=15)
+        self.minute_btn.toggled.connect(self._toggle_minute)
+        auto.addWidget(self.minute_btn)
         self.zap_spin = QSpinBox()
         self.zap_spin.setRange(5, 3600)
         self.zap_spin.setSuffix(" s")
@@ -337,12 +345,14 @@ class MainWindow(QMainWindow):
         self.zap_spin.setToolTip("Intervalo do zapping (role o mouse ou digite)")
         self.zap_spin.setValue(self.cfg["zap_interval"])
         self.zap_spin.valueChanged.connect(lambda val: self.cfg.__setitem__("zap_interval", val))
+        self.zap_spin.valueChanged.connect(lambda val: val != 60 and self._uncheck_minute())
         auto.addWidget(self.zap_spin)
         self.zap_mode = QComboBox()
         self.zap_mode.addItems(["Sequencial", "Aleatório"])
         self.zap_mode.setFixedWidth(112)
         self.zap_mode.setCurrentIndex(1 if self.cfg["zap_random"] else 0)
         self.zap_mode.currentIndexChanged.connect(lambda i: self.cfg.__setitem__("zap_random", i == 1))
+        self.zap_mode.currentIndexChanged.connect(lambda i: i != 0 and self._uncheck_minute())
         auto.addWidget(self.zap_mode)
         self.zap_favs_cb = make_btn("star", "Zapping só pelos favoritos", kind="tool", checkable=True, icon_size=17)
         self.zap_favs_cb.setChecked(self.cfg["zap_favs"])
@@ -424,6 +434,7 @@ class MainWindow(QMainWindow):
         sc("Ctrl+D", self.toggle_fav_current)
         sc("Ctrl+M", self.toggle_mute)
         sc("Ctrl+Z", self.zap_btn.toggle)
+        sc("Ctrl+Shift+Z", self.minute_btn.toggle)
         sc("Ctrl+G", self.open_guide)
         sc("Ctrl+S", self.snapshot)
         sc("Ctrl+R", lambda: self.rec_btn.click())
@@ -697,6 +708,7 @@ class MainWindow(QMainWindow):
             self.cfg["lists_updated"] = time.time()
             self.cfg.save()
         msg = f"{ok} lista(s) atualizada(s)" if ok else "Não foi possível atualizar (sem internet?)"
+        log.info("Listas atualizadas: %d ok, %d com erro", ok, fail)
         if ok and fail:
             msg += f", {fail} com erro"
         if ok:
@@ -824,6 +836,7 @@ class MainWindow(QMainWindow):
             return  # clique duplo não reinicia o canal
         if self.current and self.session_status.get(self.current.url) == "loading":
             self.session_status.pop(self.current.url)
+        log.info("Tocando: %s — %s", ch.name, (stream[0] if stream else ch.url))
         if not auto:
             self.fail_streak = 0
         self.current = ch
@@ -965,6 +978,7 @@ class MainWindow(QMainWindow):
 
     def _on_fail(self, reason):
         ch = self.current
+        log.warning("Canal falhou: %s (%s)", ch.name, reason)
         if not self.explore_btn.isChecked() and self._try_alternative(ch):
             return
         self._mark(ch.url, "dead")
@@ -1118,7 +1132,27 @@ class MainWindow(QMainWindow):
                 self.step(+1, auto=True, random_pick=self.zap_mode.currentIndex() == 1, pool=self._zap_pool())
         else:
             self.zap_lbl.setText("")
+            self._uncheck_minute()
         self._zap_render()
+
+    def _toggle_minute(self, on):
+        """Rolagem automática: zapping sequencial pela lista, trocando a cada 1 minuto."""
+        if on:
+            self.zap_spin.setValue(60)
+            self.zap_mode.setCurrentIndex(0)
+            if self.zap_btn.isChecked():
+                self.zap_left = 60
+                self._zap_render()
+            else:
+                self.zap_btn.setChecked(True)
+        elif self.zap_btn.isChecked():
+            self.zap_btn.setChecked(False)
+
+    def _uncheck_minute(self):
+        if self.minute_btn.isChecked():
+            self.minute_btn.blockSignals(True)
+            self.minute_btn.setChecked(False)
+            self.minute_btn.blockSignals(False)
 
     def _zap_tick(self):
         exploring = self.explore_btn.isChecked()
@@ -1549,15 +1583,16 @@ class MainWindow(QMainWindow):
             if wait:
                 w.wait(4000)
 
-    def _on_caption(self, original, translated, _lang):
+    def _on_caption(self, original, translated, _lang, replace):
         if self.cc_btn.isChecked():
-            self.subs.add(translated or original, original)
+            self.subs.add(translated or original, original, replace)
 
     def _on_caption_status(self, text):
         if self.cc_btn.isChecked():
             self.subs.set_notice(text)
 
     def _on_caption_failed(self, msg):
+        log.error("Legendas: %s", msg)
         self._stop_caption_worker()
         self.cc_btn.setChecked(False)
         self._info(f"<span style='color:{T['bad']}'>{msg}</span>", 12)
@@ -1617,9 +1652,11 @@ class MainWindow(QMainWindow):
         try:
             if reply.error() != QNetworkReply.NetworkError.NoError:
                 return
-            tag = json.loads(bytes(reply.readAll()).decode()).get("tag_name", "")
+            release = json.loads(bytes(reply.readAll()).decode())
+            tag = release.get("tag_name", "")
             self.cfg["last_update_check"] = time.time()
             self.cfg["latest_version"] = tag
+            self.cfg["update_url"], self.cfg["update_size"] = setup_asset(release)
             self.cfg.save()
             if version_tuple(tag) > version_tuple(APP_VERSION):
                 self._show_update_banner(tag)
@@ -1631,11 +1668,52 @@ class MainWindow(QMainWindow):
     def _show_update_banner(self, tag):
         self._banner_tag = tag
         self.update_banner.setText("" if self._compact else f"  Nova versão {tag} disponível")
-        self.update_banner.setToolTip("Abrir a página de download")
+        self.update_banner.setToolTip("Baixar e instalar agora" if self._one_click_update()
+                                      else "Abrir a página de download")
         self.update_banner.show()
 
-    def _open_update_page(self):
-        QDesktopServices.openUrl(QUrl(f"https://github.com/{REPO}/releases/latest"))
+    def _one_click_update(self):
+        return can_self_update() and bool(self.cfg["update_url"])
+
+    def _update_clicked(self):
+        if not self._one_click_update():
+            return QDesktopServices.openUrl(QUrl(f"https://github.com/{REPO}/releases/latest"))
+        if self.updater and self.updater.running:
+            return
+        tag = self.cfg["latest_version"]
+        mb = self.cfg["update_size"] / 1e6
+        if QMessageBox.question(
+                self, "Atualizar o IPTV Player",
+                f"Baixar e instalar a versão {tag} agora ({mb:.0f} MB)?\n\n"
+                "Quando o download terminar, o programa fecha, instala a versão nova "
+                "e abre de novo sozinho. Seus favoritos e configurações continuam.") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        if not self.updater:
+            self.updater = UpdateDownloader(self)
+            self.updater.progress.connect(self._update_progress)
+            self.updater.finished.connect(self._update_downloaded)
+        self.update_banner.setEnabled(False)
+        self._update_progress(0)
+        self.updater.start(self.cfg["update_url"], self.cfg["update_size"])
+
+    def _update_progress(self, pct):
+        self.update_banner.setText(f"{pct}%" if self._compact else f"  Baixando atualização… {pct}%")
+
+    def _update_downloaded(self, path):
+        self.update_banner.setEnabled(True)
+        if not path:
+            self._show_update_banner(self.cfg["latest_version"])
+            self._info(f"<span style='color:{T['bad']}'>Não foi possível baixar a atualização. "
+                       "Tente de novo mais tarde.</span>", 10)
+            return
+        try:
+            run_installer(path)
+        except OSError as e:
+            log.exception("Atualização: o instalador não abriu")
+            self._info(f"<span style='color:{T['bad']}'>O instalador não abriu: {e}</span>", 10)
+            return
+        self.close()  # libera os arquivos para o instalador substituir
 
     # ================================================================ configurações
     def open_settings(self):
@@ -1658,6 +1736,8 @@ class MainWindow(QMainWindow):
     # ================================================================ encerramento
     def closeEvent(self, e):
         self.scanner.stop()
+        if self.updater:
+            self.updater.cancel()
         self.subs_timer.stop()
         self._stop_caption_worker(wait=True)
         self.subs.close()

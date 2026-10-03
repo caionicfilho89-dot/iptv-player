@@ -8,17 +8,22 @@ import json
 import os
 import queue
 import re
+import shutil
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import warnings
+import zipfile
 from collections import deque
+from pathlib import Path
 
 from PyQt6.QtCore import QPoint, QRect, QRectF, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath
 from PyQt6.QtWidgets import QWidget
 
+from .log import log
 from .paths import CACHE
 
 # huggingface_hub escreve barras de progresso no stderr, que não existe no .exe sem console
@@ -33,23 +38,44 @@ BLOCK = RATE // 10           # blocos de 100 ms
 MIN_SEG = 2.0                # segundos de fala antes de aceitar uma pausa como fim de frase
 MAX_SEG = 5.0                # corta a frase à força para a legenda não atrasar demais
 PAUSE_BLOCKS = 4             # 400 ms de silêncio = fim de frase
+# o som capturado já vem com o volume do player aplicado: com o volume baixo a fala fica bem fraca,
+# então só o silêncio digital (quase zero) conta como "nada tocando"
+MIN_LEVEL = 0.0002
 MAX_BACKLOG = 12.0           # se a IA ficar para trás, descarta o áudio mais antigo
+JOIN_GAP = 3.0               # frase sem ponto final + próximo trecho em até 3 s = mesma frase
+MAX_JOIN = 220               # limite de caracteres ao juntar pedaços da mesma frase
+RECHECK_EVERY = 6            # com o idioma fixado, confere de novo a cada 6 trechos (o canal pode mudar)
 
 MODELS = {  # nome -> (rótulo, tamanho aproximado do download em MB)
     "base": ("Rápido (menos preciso)", 145),
     "small": ("Equilibrado (recomendado)", 484),
     "medium": ("Preciso (exige PC mais forte)", 1530),
+    "large-v3-turbo": ("Máxima (placa de vídeo NVIDIA)", 1620),
 }
+GPU_MODEL = "large-v3-turbo"  # pesado demais para o processador; sem placa NVIDIA usa o "small"
+
+# placa de vídeo NVIDIA: o CTranslate2 precisa do cuBLAS e do cuDNN, baixados do PyPI só quando pedidos
+CUDA_DIR = CACHE / "cuda"
+CUDA_WHEELS = (("nvidia-cublas-cu12", "12.9.2.10"), ("nvidia-cudnn-cu12", "9.27.0.42"))
+CUDA_DOWNLOAD_MB = 1300
+CUDA_DLLS = ("cublas64_12.dll", "cublasLt64_12.dll", "cudnn64_9.dll")
 SOURCE_LANGS = {
     "auto": "Detectar automaticamente", "en": "Inglês", "es": "Espanhol", "fr": "Francês",
-    "it": "Italiano", "de": "Alemão", "ru": "Russo", "ar": "Árabe", "tr": "Turco", "ja": "Japonês",
-    "ko": "Coreano", "zh": "Chinês", "hi": "Hindi", "nl": "Holandês", "pl": "Polonês", "pt": "Português",
+    "it": "Italiano", "de": "Alemão", "ru": "Russo", "uk": "Ucraniano", "ar": "Árabe", "tr": "Turco",
+    "el": "Grego", "he": "Hebraico", "fa": "Persa", "hi": "Hindi", "ja": "Japonês", "ko": "Coreano",
+    "zh": "Chinês", "id": "Indonésio", "vi": "Vietnamita", "th": "Tailandês", "nl": "Holandês",
+    "sv": "Sueco", "pl": "Polonês", "ro": "Romeno", "pt": "Português",
 }
 TARGET = "pt"
-# frases que o Whisper costuma "inventar" em música ou silêncio
+# frases que o Whisper costuma "inventar" em música, vinheta ou silêncio (em vários idiomas)
 HALLUCINATIONS = re.compile(
     r"(obrigad[oa] por assistir|legendas? (pela|por)|inscreva-se|thanks for watching|thank you for watching|"
-    r"subtitles by|amara\.org|please subscribe|www\.|\.com\b|♪|^\W*$)", re.I)
+    r"subtitles by|amara\.org|please subscribe|like and subscribe|subtítulos (realizados )?por|"
+    r"gracias por ver|sous-titr|merci d'avoir regardé|untertitel (im auftrag|von|der)|"
+    r"продолжение следует|субтитры|ご視聴|字幕|請不吝|请不吝|點贊|点赞|구독|시청해 주셔서|"
+    r"www\.|\.com\b|♪|^\W*$)", re.I)
+REPEAT_RE = re.compile(r"\b(\w+(?:\W+\w+){0,3})(?:\W+\1\b){3,}", re.I)  # "the the the the…": IA em loop
+SENTENCE_END = re.compile(r"[.!?…。！？]\W*$")
 
 
 def missing_deps():
@@ -63,20 +89,97 @@ def missing_deps():
     return missing
 
 
+def gpu_available():
+    """Há uma placa NVIDIA que o CTranslate2 consegue usar?"""
+    try:
+        import ctranslate2
+        return ctranslate2.get_cuda_device_count() > 0
+    except Exception:  # noqa: BLE001 - sem driver NVIDIA, DLL ausente…
+        return False
+
+
+def _cuda_dirs():
+    dirs = [CUDA_DIR]
+    try:  # rodando pelo código-fonte com os pacotes nvidia-* do pip
+        import nvidia
+        base = Path(list(nvidia.__path__)[0])
+        dirs += [base / "cublas" / "bin", base / "cudnn" / "bin"]
+    except Exception:  # noqa: BLE001
+        pass
+    return [d for d in dirs if d.is_dir()]
+
+
+def cuda_ready():
+    found = {f.lower() for d in _cuda_dirs() for f in os.listdir(d)}
+    return all(dll.lower() in found for dll in CUDA_DLLS)
+
+
+def _enable_cuda_dirs():
+    for d in _cuda_dirs():
+        os.add_dll_directory(str(d))
+        if str(d) not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
+
+
+def download_cuda(progress, cancelled):
+    """Baixa o cuBLAS e o cuDNN (pacotes oficiais da NVIDIA no PyPI) e guarda só as DLLs."""
+    CUDA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = CUDA_DIR / "download.whl"
+    done = 0
+    try:
+        for name, ver in CUDA_WHEELS:
+            with urllib.request.urlopen(f"https://pypi.org/pypi/{name}/{ver}/json", timeout=20) as r:
+                info = json.loads(r.read().decode("utf-8"))
+            url = next(u["url"] for u in info["urls"] if u["filename"].endswith("win_amd64.whl"))
+            with urllib.request.urlopen(url, timeout=30) as r, open(tmp, "wb") as f:
+                while chunk := r.read(1 << 20):
+                    if cancelled():
+                        raise RuntimeError("cancelado")
+                    f.write(chunk)
+                    done += len(chunk)
+                    progress(done / 1e6)
+            with zipfile.ZipFile(tmp) as z:
+                for n in z.namelist():
+                    if n.lower().endswith(".dll") and "/bin/" in n:
+                        part = CUDA_DIR / (os.path.basename(n) + ".part")
+                        with z.open(n) as src, open(part, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
+                        os.replace(part, CUDA_DIR / os.path.basename(n))  # DLL pela metade nunca fica no lugar
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def is_garbage(text):
+    """Texto que não deve virar legenda: frases inventadas pela IA ou palavras repetidas em loop."""
+    return bool(HALLUCINATIONS.search(text) or REPEAT_RE.search(text))
+
+
 _tr_cache = {}
+_tr_down_until = 0.0  # sem internet: não tenta traduzir de novo por alguns segundos
 
 
-GOOGLE_CODES = {"zh": "zh-CN", "he": "iw", "jw": "jv"}  # códigos do Whisper que o Google escreve diferente
+BR_BILLION = {"ão": "bilhão", "ões": "bilhões"}
+GOOGLE_CODES = {"zh": "zh-CN", "he": "iw", "jw": "jv", "yue": "zh-TW"}  # códigos que o Google escreve diferente
 
 
 def translate(text, src, dst=TARGET):
-    """Tradução pelo Google Tradutor (mesmo serviço da tradução automática do YouTube)."""
+    """Tradução pelo Google Tradutor (mesmo serviço da tradução automática do YouTube).
+
+    Devolve "" quando não dá para traduzir agora (sem internet); aí a legenda mostra o original."""
+    global _tr_down_until
+    if time.monotonic() < _tr_down_until:
+        return ""
     try:
-        return _translate(text, GOOGLE_CODES.get(src, src), dst)
-    except Exception:  # noqa: BLE001 - idioma não reconhecido pelo Google: deixa ele detectar
-        if not src or src == "auto":
-            raise
-        return _translate(text, "auto", dst)
+        try:
+            return _translate(text, GOOGLE_CODES.get(src, src), dst)
+        except urllib.error.HTTPError:
+            if not src or src == "auto":
+                raise
+            return _translate(text, "auto", dst)  # idioma não reconhecido pelo Google: deixa ele detectar
+    except (OSError, ValueError, LookupError, TypeError) as e:  # sem conexão, tempo esgotado ou resposta estranha
+        log.warning("Tradução indisponível por 20 s: %s", e)
+        _tr_down_until = time.monotonic() + 20
+        return ""
 
 
 def _translate(text, src, dst):
@@ -86,9 +189,11 @@ def _translate(text, src, dst):
     q = urllib.parse.urlencode({"client": "gtx", "sl": src or "auto", "tl": dst, "dt": "t", "q": text})
     req = urllib.request.Request("https://translate.googleapis.com/translate_a/single?" + q,
                                  headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=6) as r:
+    with urllib.request.urlopen(req, timeout=5) as r:
         data = json.loads(r.read().decode("utf-8"))
     out = "".join(part[0] for part in data[0] if part and part[0]).strip()
+    if dst == "pt":  # o Google às vezes escreve números grandes como em Portugal
+        out = re.sub(r"\b(\d+(?:[.,]\d+)?) mil milh(ão|ões)", lambda m: f"{m.group(1)} {BR_BILLION[m.group(2)]}", out)
     if len(_tr_cache) > 300:
         _tr_cache.clear()
     _tr_cache[key] = out
@@ -115,9 +220,55 @@ def _dir_mb(path):
     return total / 1e6
 
 
+class Segmenter:
+    """Junta blocos de 100 ms de áudio em trechos de fala, cortando nas pausas."""
+
+    def __init__(self):
+        self.buf = []
+        self.levels = deque(maxlen=150)   # ~15 s de histórico para achar o nível de ruído
+
+    def clear(self):
+        self.buf.clear()
+
+    def feed(self, block):
+        """Recebe um bloco; devolve um trecho pronto para reconhecer (ou None)."""
+        import numpy as np
+        buf, levels = self.buf, self.levels
+        buf.append(block)
+        levels.append(float(np.sqrt(np.mean(block * block))))
+        if len(levels) > 10:
+            floor, loud = np.percentile(levels, (20, 80))
+            # fala contínua (telejornal, trilha de fundo) não tem silêncio de verdade: o limite não pode
+            # passar do nível normal da fala, senão ela é tratada como silêncio e jogada fora
+            thr = max(MIN_LEVEL, min(float(floor) * 2.2, float(loud) * 0.35))
+        else:
+            thr = MIN_LEVEL
+        voiced = [lv > thr for lv in list(levels)[-len(buf):]]
+        if not any(voiced):
+            del buf[:-3]  # silêncio: guarda só um pedacinho para não cortar o início da fala
+            return None
+        dur = len(buf) * 0.1
+        tail = 0
+        for v in reversed(voiced):
+            if v:
+                break
+            tail += 1
+        if not ((dur >= MIN_SEG and tail >= PAUSE_BLOCKS) or dur >= MAX_SEG):
+            return None
+        if tail >= PAUSE_BLOCKS:
+            cut = len(buf)
+        else:  # corta no ponto mais baixo do último 1,5 s
+            recent = list(levels)[-15:]
+            cut = len(buf) - 15 + min(range(len(recent)), key=recent.__getitem__) + 1
+            cut = max(1, min(len(buf), cut))
+        seg = np.concatenate(buf[:cut])
+        del buf[:cut]
+        return seg
+
+
 class CaptionWorker(QThread):
     """Captura o áudio, transcreve e traduz em segundo plano."""
-    caption = pyqtSignal(str, str, str)   # original, tradução, idioma
+    caption = pyqtSignal(str, str, str, bool)   # original, tradução, idioma, substitui a última linha
     status = pyqtSignal(str)
     failed = pyqtSignal(str)
     ready = pyqtSignal()
@@ -130,8 +281,14 @@ class CaptionWorker(QThread):
         self._active = threading.Event()
         self._reset = threading.Event()
         self._audio = queue.Queue()
+        self._tr_queue = queue.Queue()
+        self._gen = 0                 # muda a cada troca de canal: traduções pendentes são descartadas
         self._lang_votes = deque(maxlen=6)
+        self._mismatch = 0
+        self._count = 0
+        self._last = None             # (texto, momento, idioma) da última legenda, para juntar frases
         self.locked_lang = None
+        self.device = "cpu"
 
     # ---- chamados pela interface
     def set_active(self, on):
@@ -145,6 +302,7 @@ class CaptionWorker(QThread):
     def stop(self):
         self._stop.set()
         self._active.set()  # acorda o laço para ele terminar
+        self._tr_queue.put(None)
 
     # ---- thread
     def run(self):
@@ -152,10 +310,13 @@ class CaptionWorker(QThread):
             model = self._load_model()
         except Exception as e:  # noqa: BLE001
             if not self._stop.is_set():
+                log.exception("Não foi possível carregar a IA de legendas")
                 self.failed.emit(f"Não foi possível carregar a IA de legendas: {e}")
             return
         if self._stop.is_set():
             return
+        # a tradução roda à parte: internet lenta não atrasa o reconhecimento da próxima frase
+        threading.Thread(target=self._translate_loop, daemon=True).start()
         self.ready.emit()
         while not self._stop.is_set():
             self._active.wait()
@@ -164,22 +325,63 @@ class CaptionWorker(QThread):
             try:
                 self._listen(model)
             except Exception as e:  # noqa: BLE001
+                log.exception("Erro ao ouvir o áudio")
                 self.failed.emit(f"Erro ao ouvir o áudio: {e}")
                 self._active.clear()
 
     def _load_model(self):
         from faster_whisper import WhisperModel
+
+        name = self.model_name
+        use_gpu = gpu_available() and (name == GPU_MODEL or cuda_ready())
+        if use_gpu and not cuda_ready():
+            try:
+                download_cuda(lambda mb: self.status.emit(
+                    f"Baixando o acelerador da placa de vídeo ({mb:.0f} de ~{CUDA_DOWNLOAD_MB} MB) — "
+                    "só na primeira vez…"), self._stop.is_set)
+            except Exception:  # noqa: BLE001 - sem internet ou cancelado: segue no processador
+                if self._stop.is_set():
+                    raise
+                log.exception("Não foi possível baixar o acelerador da placa de vídeo")
+                use_gpu = False
+        if not use_gpu and name == GPU_MODEL:
+            name = "small"
+        if use_gpu:
+            try:
+                _enable_cuda_dirs()
+                path = self._fetch(name)
+                self.status.emit("Carregando a IA de legendas na placa de vídeo…")
+                model = WhisperModel(str(path), device="cuda", compute_type="float16")
+                import numpy as np
+                list(model.transcribe(np.zeros(RATE, np.float32))[0])  # testa as DLLs da placa de verdade
+                self.device = "cuda"
+                log.info("Legendas: modelo %s na placa de vídeo", name)
+                return model
+            except Exception:  # noqa: BLE001 - driver antigo, pouca memória de vídeo…: usa o processador
+                if self._stop.is_set():
+                    raise
+                log.exception("Placa de vídeo falhou; usando o processador")
+                if name == GPU_MODEL:
+                    name = "small"
+        path = self._fetch(name)
+        self.status.emit("Carregando a IA de legendas…")
+        threads = max(2, min(8, (os.cpu_count() or 4) // 2))
+        log.info("Legendas: modelo %s no processador (%d threads)", name, threads)
+        return WhisperModel(str(path), device="cpu", compute_type="int8", cpu_threads=threads)
+
+    def _fetch(self, name):
+        """Pasta do modelo, baixando na primeira vez."""
         from faster_whisper.utils import download_model
 
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
-        label, size_mb = MODELS[self.model_name]
-        target = MODEL_DIR / self.model_name
+        _label, size_mb = MODELS[name]
+        target = MODEL_DIR / name
         if not (target / "model.bin").exists():
             result = {}
 
             def dl():
                 try:
-                    result["path"] = download_model(self.model_name, output_dir=str(target))
+                    result["path"] = download_model(name, output_dir=str(target))
                 except Exception as e:  # noqa: BLE001
                     result["error"] = e
             t = threading.Thread(target=dl, daemon=True)
@@ -192,9 +394,7 @@ class CaptionWorker(QThread):
                 t.join(0.7)
             if "error" in result:
                 raise result["error"]
-        self.status.emit("Carregando a IA de legendas…")
-        threads = max(2, min(8, (os.cpu_count() or 4) // 2))
-        return WhisperModel(str(target), device="cpu", compute_type="int8", cpu_threads=threads)
+        return target
 
     def _listen(self, model):
         import numpy as np
@@ -203,6 +403,7 @@ class CaptionWorker(QThread):
 
         speaker = sc.default_speaker()
         mic = sc.get_microphone(id=str(speaker.name), include_loopback=True)
+        log.info("Legendas: ouvindo o som de \"%s\"", speaker.name)
         capture_stop = threading.Event()
 
         def capture():
@@ -217,14 +418,13 @@ class CaptionWorker(QThread):
         th = threading.Thread(target=capture, daemon=True)
         th.start()
         self.status.emit("")
-        buf, levels = [], deque(maxlen=150)   # ~15 s de histórico para achar o nível de ruído
+        seg = Segmenter()
         try:
             while self._active.is_set() and not self._stop.is_set():
                 if self._reset.is_set():
                     self._reset.clear()
-                    buf.clear()
-                    self._lang_votes.clear()
-                    self.locked_lang = None
+                    seg.clear()
+                    self._forget()
                     self._drain()
                 try:
                     block = self._audio.get(timeout=0.5)
@@ -235,35 +435,23 @@ class CaptionWorker(QThread):
                 # atrasou (IA lenta)? pula para o presente
                 if self._audio.qsize() * 0.1 > MAX_BACKLOG:
                     self._drain()
-                    buf.clear()
+                    seg.clear()
+                    self._last = None
                     continue
-                buf.append(block)
-                levels.append(float(np.sqrt(np.mean(block * block))))
-                floor = float(np.percentile(levels, 20)) if len(levels) > 10 else 0.0
-                thr = max(0.004, floor * 2.2)
-                voiced = [lv > thr for lv in list(levels)[-len(buf):]]
-                dur = len(buf) * 0.1
-                if not any(voiced):
-                    del buf[:-3]  # silêncio: guarda só um pedacinho para não cortar o início da fala
-                    continue
-                tail = 0
-                for v in reversed(voiced):
-                    if v:
-                        break
-                    tail += 1
-                if (dur >= MIN_SEG and tail >= PAUSE_BLOCKS) or dur >= MAX_SEG:
-                    if tail >= PAUSE_BLOCKS:
-                        cut = len(buf)
-                    else:  # corta no ponto mais baixo do último 1,5 s
-                        recent = list(levels)[-15:]
-                        cut = len(buf) - 15 + min(range(len(recent)), key=recent.__getitem__) + 1
-                        cut = max(1, min(len(buf), cut))
-                    seg, buf = np.concatenate(buf[:cut]), buf[cut:]
-                    self._process(model, seg)
+                audio = seg.feed(block)
+                if audio is not None:
+                    self._process(model, audio)
         finally:
             capture_stop.set()
             th.join(1.5)
             self._drain()
+
+    def _forget(self):
+        self._gen += 1
+        self._lang_votes.clear()
+        self._mismatch = self._count = 0
+        self._last = None
+        self.locked_lang = None
 
     def _drain(self):
         try:
@@ -274,16 +462,20 @@ class CaptionWorker(QThread):
 
     def _process(self, model, audio):
         peak = float(abs(audio).max())
-        if peak < 1e-3:
+        if peak < MIN_LEVEL:
             return
-        audio = audio * min(20.0, 0.9 / peak)  # o volume do player não pode atrapalhar o reconhecimento
+        audio = audio * min(500.0, 0.9 / peak)  # o volume do player não pode atrapalhar o reconhecimento
+        self._count += 1
+        if self.source == "auto" and self.locked_lang and self._count % RECHECK_EVERY == 0:
+            self._recheck_lang(model, audio)
         lang = self.source if self.source != "auto" else self.locked_lang
         segments, info = model.transcribe(
-            audio, language=lang, beam_size=2, vad_filter=True, condition_on_previous_text=False,
+            audio, language=lang, beam_size=5 if self.device == "cuda" else 2, vad_filter=True, condition_on_previous_text=False,
             vad_parameters={"min_silence_duration_ms": 300})
-        parts = [s.text.strip() for s in segments if s.no_speech_prob < 0.6 and s.avg_logprob > -1.1]
+        parts = [s.text.strip() for s in segments
+                 if s.no_speech_prob < 0.6 and s.avg_logprob > -1.1 and s.compression_ratio < 2.4]
         text = re.sub(r"\s+", " ", " ".join(parts)).strip()
-        if not text or HALLUCINATIONS.search(text) or self._reset.is_set():
+        if not text or is_garbage(text) or self._reset.is_set():
             return
         detected = lang or info.language
         if self.source == "auto" and not self.locked_lang and info.language_probability > 0.6:
@@ -291,14 +483,51 @@ class CaptionWorker(QThread):
             best = max(set(self._lang_votes), key=self._lang_votes.count)
             if self._lang_votes.count(best) >= 3:
                 self.locked_lang = best  # fixa o idioma do canal: detecção fica mais estável
-        if detected == TARGET:
-            return self.caption.emit(text, text, detected)
+                log.info("Legendas: idioma do canal = %s", best)
+        self._emit(text, detected)
+
+    def _emit(self, text, lang):
+        now = time.monotonic()
+        prev = self._last
+        if prev and prev[0].lower().endswith(text.lower()) and now - prev[1] < 2 * JOIN_GAP:
+            return  # a IA repetiu o mesmo trecho
+        # continua a frase anterior se ela não terminou, ou se o Whisper pôs um ponto no meio dela
+        # (o trecho novo começa com minúscula: "…na capital." + "que custará…")
+        join = bool(prev and prev[2] == lang and now - prev[1] < JOIN_GAP and len(prev[0]) + len(text) < MAX_JOIN
+                    and (not SENTENCE_END.search(prev[0]) or text[:1].islower()))
+        full = f"{prev[0].rstrip('.') if text[:1].islower() else prev[0]} {text}" if join else text
+        self._last = (full, now, lang)
+        # frase cortada no meio: traduz a frase inteira (fica bem melhor) e troca a linha anterior
+        self._tr_queue.put((self._gen, full, lang, join))
+
+    def _recheck_lang(self, model, audio):
+        """O idioma fixado ainda vale? (troca de programa, comercial em outra língua…)"""
         try:
-            translated = translate(text, detected)
-        except Exception:  # noqa: BLE001 - sem internet: mostra o original
-            translated = ""
-        if not self._reset.is_set():
-            self.caption.emit(text, translated, detected)
+            lang, prob, _ = model.detect_language(audio)
+        except Exception:  # noqa: BLE001 - versão antiga do faster-whisper
+            return
+        if lang != self.locked_lang and prob > 0.8:
+            self._mismatch += 1
+            if self._mismatch >= 2:
+                log.info("Legendas: idioma mudou de %s para %s", self.locked_lang, lang)
+                self.locked_lang = None
+                self._lang_votes.clear()
+                self._lang_votes.append(lang)
+                self._mismatch = 0
+        else:
+            self._mismatch = 0
+
+    def _translate_loop(self):
+        while True:
+            item = self._tr_queue.get()
+            if item is None or self._stop.is_set():
+                return
+            gen, text, lang, replace = item
+            if gen != self._gen:
+                continue  # o canal já mudou
+            translated = text if lang == TARGET else translate(text, lang)
+            if gen == self._gen and not self._stop.is_set():
+                self.caption.emit(text, translated, lang, replace)
 
 
 class SubtitleOverlay(QWidget):
@@ -328,9 +557,12 @@ class SubtitleOverlay(QWidget):
         if visible:
             self.show()
 
-    def add(self, text, original=""):
+    def add(self, text, original="", replace=False):
         self.notice = ""
-        self.lines.append((text, original if original != text else "", time.monotonic() + self.LINE_TTL))
+        if replace and self.lines:
+            self.lines.pop()  # mesma frase, agora completa
+        ttl = min(10.0, self.LINE_TTL + len(text) / 40)  # frase longa fica mais tempo na tela
+        self.lines.append((text, original if original != text else "", time.monotonic() + ttl))
         self._relayout()
 
     def set_notice(self, text):

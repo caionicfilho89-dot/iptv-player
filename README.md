@@ -25,16 +25,18 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 **Canais**
 - Listas por categoria (Brasil, Português, Filmes, Séries, Esportes, Notícias, Infantil…) **atualizadas
   automaticamente** a partir do [iptv-org](https://github.com/iptv-org/iptv)
+- **Mundo (Free-TV)** 🆕: mais ~1.300 canais abertos do mundo todo, da lista [Free-TV](https://github.com/Free-TV/IPTV)
 - **Adicione suas próprias listas** por link (ex.: a da sua operadora de IPTV) ou arquivo `.m3u`
 - **Guia de programação (EPG)**: o que está passando agora e a seguir, com barra de progresso
 - Busca, filtro por grupo, favoritos ⭐ e recentes
-- **Listas atualizadas todo dia**, com os canais que chegaram marcados como **NOVO** e reunidos na categoria **Novos** 🆕
-- **Links quebrados trocados sozinhos** 🆕: se um canal cai, o app procura o mesmo canal em outro link (em qualquer lista), usa o que funcionar e lembra dele
+- **Listas atualizadas todo dia**, com os canais que chegaram marcados como **NOVO** e reunidos na categoria **Novos**
+- **Links quebrados trocados sozinhos**: se um canal cai, o app procura o mesmo canal em outro link (em qualquer lista), usa o que funcionar e lembra dele
 
 **Troca automática**
 - **Pular canais offline**: se o canal não abrir, der erro ou travar, vai para o próximo sozinho
 - **Zapping automático** a cada N segundos, em ordem ou aleatório, também **só pelos favoritos**
-- **Explorar** 🆕: passa sozinho por **todos os canais de todas as listas**, pulando os offline e os que você já viu; a lista rola acompanhando
+- **Botão "1 min"** 🆕: rolagem automática que passa para o próximo canal da lista a cada minuto
+- **Explorar**: passa sozinho por **todos os canais de todas as listas**, pulando os offline e os que você já viu; a lista rola acompanhando
 - **Testar lista**: descobre em segundo plano quais canais estão no ar
 - **Digite o número do canal** (como no controle remoto) para ir direto a ele
 
@@ -44,12 +46,14 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 - **Mosaico**: 2, 4 ou 9 canais ao mesmo tempo
 - **Gravar canal** e **tirar foto da tela**
 - **Timer para desligar** (ou ao fim do programa atual)
-- **Legendas traduzidas por IA** 🆕: canais em inglês, espanhol, francês e outros idiomas ganham legenda em
-  português ao vivo, como a tradução automática do YouTube (botão **CC** ou `Ctrl+T`)
+- **Legendas traduzidas por IA**: canais em inglês, espanhol, francês e outros idiomas ganham legenda em
+  português ao vivo, como a tradução automática do YouTube (botão **CC** ou `Ctrl+T`) — 🆕 agora traduz a
+  frase inteira, funciona com o volume baixo e usa a **placa de vídeo NVIDIA** quando houver
 
 **Visual**
 - Modo **lista** ou **grade**, tema **escuro** ou **claro** e 6 cores de destaque
-- Aviso quando sair uma versão nova
+- **Atualização com um clique** 🆕: quando sai uma versão nova, um clique baixa, instala e reabre o programa
+- **Registro de erros** 🆕 (Configurações → Abrir registro de erros), para descobrir por que algo não funcionou
 
 ![Modo grade e tema claro](docs/screenshot-grade.png)
 
@@ -65,6 +69,7 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 | `Ctrl+D` | Favoritar canal atual |
 | `Ctrl+M` | Mudo |
 | `Ctrl+Z` | Liga/desliga o zapping |
+| `Ctrl+Shift+Z` | Liga/desliga a rolagem automática de 1 minuto |
 | `Ctrl+E` | Liga/desliga o modo Explorar |
 | `Ctrl+G` | Guia de programação |
 | `Ctrl+S` | Foto da tela |
@@ -84,6 +89,11 @@ Fotos vão para **Imagens\IPTV Player** e gravações para **Vídeos\IPTV Player
 Na primeira vez que você liga, o modelo de IA é baixado (cerca de 480 MB). Em **Configurações → Legendas
 traduzidas por IA** dá para escolher a qualidade (Rápido / Equilibrado / Preciso), fixar o idioma do canal,
 mudar o tamanho da legenda e mostrar também a frase original.
+
+**Tem placa de vídeo NVIDIA?** Escolha a qualidade **Máxima**: ela usa o modelo *large-v3-turbo* na placa de
+vídeo, que entende muito melhor idiomas menos comuns e responde em menos de 1 segundo. Na primeira vez são
+baixados o modelo (~1,6 GB) e o acelerador da NVIDIA (cuBLAS/cuDNN, ~1,3 GB). Sem placa NVIDIA, o programa usa
+o processador normalmente.
 
 ## 🐍 Rodando pelo código-fonte
 

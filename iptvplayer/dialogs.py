@@ -1,18 +1,24 @@
 """Diálogos: configurações, adicionar lista e guia de programação."""
 import time
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QColor, QDesktopServices
 from PyQt6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QVBoxLayout,
 )
 
 from . import APP_VERSION
-from .captions import MODELS, SOURCE_LANGS
+from .captions import CUDA_DOWNLOAD_MB, GPU_MODEL, MODELS, SOURCE_LANGS, cuda_ready, gpu_available
 from .config import DEFAULT_EPG_URLS
+from .log import LOG_FILE
 from .theme import ACCENTS, T
 from .widgets import make_btn
+
+
+def _open_log():
+    target = LOG_FILE if LOG_FILE.exists() else LOG_FILE.parent
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
 
 
 def _row(*widgets, stretch_last=False):
@@ -89,7 +95,13 @@ class SettingsDialog(QDialog):
         lay.addWidget(QLabel("A IA ouve o som do canal, reconhece a fala no seu computador e traduz para o "
                              "português (Ctrl+T liga e desliga).", objectName="muted", wordWrap=True))
         self.cap_model = QComboBox()
+        has_gpu = gpu_available()
         for key, (label, mb) in MODELS.items():
+            if key == GPU_MODEL:
+                if not has_gpu:
+                    continue  # só aparece em PCs com placa NVIDIA
+                if not cuda_ready():
+                    mb += CUDA_DOWNLOAD_MB  # acelerador da placa, baixado junto na primeira vez
             self.cap_model.addItem(f"{label} · {mb} MB", key)
         self.cap_model.setCurrentIndex(max(0, self.cap_model.findData(cfg["cap_model"])))
         self.cap_source = QComboBox()
@@ -109,6 +121,9 @@ class SettingsDialog(QDialog):
         self.check_upd = QCheckBox("Avisar quando houver uma nova versão do IPTV Player")
         self.check_upd.setChecked(cfg["check_updates"])
         lay.addWidget(self.check_upd)
+        lay.addLayout(_row(make_btn("folder", "Arquivo com o que o programa fez e os erros que aconteceram — "
+                                    "útil para descobrir por que algo não funcionou", _open_log, kind="",
+                                    text="  Abrir registro de erros", icon_size=16)))
         lay.addSpacing(8)
         ok = QPushButton("Salvar", objectName="primary")
         ok.clicked.connect(self.accept)

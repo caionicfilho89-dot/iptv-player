@@ -25,6 +25,7 @@ EXTINF_RE = re.compile(r'^#EXTINF:\s*-?\d+((?:\s+[\w-]+="[^"]*")*)\s*,(.*)$')
 ATTR_RE = re.compile(r'([\w-]+)="([^"]*)"')
 QUALITY_RE = re.compile(r"\((\d{3,4}[pi])\)")
 TAG_RE = re.compile(r"\[[^\]]*\]|\(\d{3,4}[pi]\)")
+FREETV_MARK_RE = re.compile("[ⓈⒼⓎ]")  # Ⓢ Ⓖ Ⓨ: marcas da lista Free-TV (SD, bloqueio por país, YouTube)
 
 
 def parse_m3u_text(text):
@@ -57,13 +58,13 @@ def parse_m3u_text(text):
             attrs, title = info or ({}, line.rsplit("/", 1)[-1])
             q = QUALITY_RE.search(title)
             channels.append(Channel(
-                name=re.sub(r"\s{2,}", " ", TAG_RE.sub("", title)).strip() or title,
+                name=re.sub(r"\s{2,}", " ", TAG_RE.sub("", FREETV_MARK_RE.sub("", title))).strip() or title,
                 url=line,
                 logo=attrs.get("tvg-logo", ""),
                 group=attrs.get("group-title", "").split(";")[0],
                 quality=q.group(1) if q else "",
                 not247="Not 24/7" in title,
-                geo="Geo-blocked" in title,
+                geo="Geo-blocked" in title or "Ⓖ" in title,  # Ⓖ: marca de bloqueio por país do Free-TV
                 tvg_id=attrs.get("tvg-id", ""),
                 opts=opts,
             ))

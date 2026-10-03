@@ -21,7 +21,7 @@ DEFAULTS = {
     "auto_update_lists": True, "lists_updated": 0,
     "custom_sources": [],
     "epg_enabled": True, "epg_urls": DEFAULT_EPG_URLS,
-    "check_updates": True, "last_update_check": 0, "latest_version": "",
+    "check_updates": True, "last_update_check": 0, "latest_version": "", "update_url": "", "update_size": 0,
     "mosaic_size": 2,
     "alt_links": {}, "explore_pos": [],
     "captions": False, "cap_model": "small", "cap_source": "auto", "cap_original": False, "cap_scale": 1.0,

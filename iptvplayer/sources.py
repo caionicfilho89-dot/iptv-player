@@ -9,7 +9,9 @@ FAV_KEY, RECENT_KEY, NEW_KEY = "__fav", "__recent", "__new"
 SPECIAL_KEYS = (FAV_KEY, RECENT_KEY, NEW_KEY)
 CUSTOM_PREFIX = "custom:"
 
-# chave (= nome do .m3u), rótulo, ícone, caminho no iptv-org (None = só local)
+FREE_TV = "https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8"
+
+# chave (= nome do .m3u), rótulo, ícone, caminho no iptv-org ou URL completa (None = só local)
 BUILTIN = [
     ("melhor_iptv", "Todos (melhores)", "tv", None),
     ("todos", "Todos os canais", "globe", "index.m3u"),
@@ -27,6 +29,7 @@ BUILTIN = [
     ("gerais", "Gerais", "antenna", "categories/general.m3u"),
     ("english", "English", "globe", "languages/eng.m3u"),
     ("español", "Español", "globe", "languages/spa.m3u"),
+    ("mundo", "Mundo (Free-TV)", "antenna", FREE_TV),  # só canais abertos; complementa o iptv-org
 ]
 BUILTIN_KEYS = {b[0] for b in BUILTIN}
 
@@ -41,10 +44,14 @@ def builtin_entries():
     return out
 
 
+def _full_url(remote):
+    return remote if is_remote(remote) else IPTV_ORG + remote
+
+
 def remote_url(key):
     for k, _, _, remote in BUILTIN:
         if k == key and remote:
-            return IPTV_ORG + remote
+            return _full_url(remote)
     return None
 
 
@@ -93,6 +100,6 @@ def cache_path(key, custom_sources):
 
 
 def all_update_jobs(custom_sources):
-    jobs = [(k, IPTV_ORG + r, LIST_CACHE / f"{k}.m3u") for k, _, _, r in BUILTIN if r]
+    jobs = [(k, _full_url(r), LIST_CACHE / f"{k}.m3u") for k, _, _, r in BUILTIN if r]
     jobs += [(custom_key(s), s["url"], custom_cache(s)) for s in custom_sources if is_remote(s["url"])]
     return jobs

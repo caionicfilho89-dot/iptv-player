@@ -49,6 +49,14 @@ Name: "{autodesktop}\IPTV Player"; Filename: "{app}\IPTV Player.exe"; Tasks: des
 
 [Run]
 Filename: "{app}\IPTV Player.exe"; Description: "Abrir o IPTV Player agora"; Flags: nowait postinstall skipifsilent
+; atualização com um clique (o app roda o instalador com /SILENT /RELAUNCH=1): reabre sozinho no fim
+Filename: "{app}\IPTV Player.exe"; Flags: nowait; Check: Relaunch
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\.cache"
+
+[Code]
+function Relaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
