@@ -761,23 +761,25 @@ class CaptionWorker(QThread):
             log.exception("Tradução sem internet falhou")
             return ""
 
-    def _translate_llm(self, text, lang, replace):
-        if self._llm is None and not self._llm_failed:
-            try:
-                if self.device != "cuda":
-                    raise RuntimeError("o tradutor IA precisa da placa de vídeo NVIDIA")
-                if not llm_ready():
-                    LLMTranslator.download(
-                        lambda mb: self.status.emit(f"Baixando o tradutor IA ({mb:.0f} de ~{LLM_MB} MB)"
-                                                    " — só na primeira vez…"), self._stop.is_set)
-                self.status.emit("Carregando o tradutor IA na placa de vídeo…")
-                self._llm = LLMTranslator()
+    def _load_llm(self):
+        """Carrega o tradutor IA em segundo plano; enquanto isso as frases vão pelo Google."""
+        try:
+            if self.device != "cuda":
+                raise RuntimeError("o tradutor IA precisa da placa de vídeo NVIDIA")
+            if not llm_ready():
+                LLMTranslator.download(
+                    lambda mb: self.status.emit(f"Baixando o tradutor IA ({mb:.0f} de ~{LLM_MB} MB)"
+                                                " — só na primeira vez…"), self._stop.is_set)
                 self.status.emit("")
-                log.info("Tradução: IA (Gemma 3) na placa de vídeo (%s)", self._llm.compute)
-            except Exception:  # noqa: BLE001 - sem memória na placa, sem internet…: segue com o Google
+            self._llm = LLMTranslator()
+            log.info("Tradução: IA (Gemma 3) na placa de vídeo (%s)", self._llm.compute)
+        except Exception:  # noqa: BLE001 - sem memória na placa, sem internet…: segue com o Google
+            if not self._stop.is_set():
                 log.exception("Tradutor IA indisponível; usando o Google")
-                self.status.emit("")
-                self._llm_failed = True
+            self.status.emit("")
+            self._llm_failed = True
+
+    def _translate_llm(self, text, lang, replace):
         context = list(self._context)
         if replace and context:
             context = context[:-1]  # a fala anterior é esta mesma, agora completa
@@ -794,6 +796,8 @@ class CaptionWorker(QThread):
         return out or translate(text, lang)
 
     def _translate_loop(self):
+        if self.translator == "ia":
+            threading.Thread(target=self._load_llm, name="tradutor-ia", daemon=True).start()
         while True:
             item = self._tr_queue.get()
             if item is None or self._stop.is_set():
