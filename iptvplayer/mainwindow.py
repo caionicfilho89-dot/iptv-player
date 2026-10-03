@@ -123,6 +123,9 @@ class MainWindow(QMainWindow):
         self.overlay = FullscreenOverlay()
         self._wire_overlay()
         self.updater = None          # download da versão nova (atualização com um clique)
+        for item in self.cfg["schedule"]:
+            if item.get("state") == "recording":
+                item["state"] = "waiting"  # o programa fechou no meio: volta a gravar se ainda estiver passando
         self.timeshift = Timeshift(self.cfg["timeshift_minutes"], self.instance, self)
         self.timeshift.ready.connect(self._ts_ready)
         self.timeshift.failed.connect(self._ts_failed)
@@ -831,7 +834,7 @@ class MainWindow(QMainWindow):
     def open_guide(self):
         if not self.current:
             return self._info("Escolha um canal para ver o guia.")
-        GuideDialog(self.current, self.epg.schedule(self.current), self).exec()
+        GuideDialog(self.current, self.epg.schedule(self.current), self, scheduler=self).exec()
 
     # ================================================================ estado
     def status_of(self, url):
@@ -1488,9 +1491,106 @@ class MainWindow(QMainWindow):
                 mb = self.recorder.size() / 1e6
                 self.info_lbl.setText(f"<span style='color:{T['bad']}'>● REC</span> {e // 60:02d}:{e % 60:02d}"
                                       f" · {self.recorder.ch.name} · {mb:.0f} MB")
+        if int(now) % 5 == 0:
+            self._check_schedule(now)
         if int(now) % 30 == 0:
             self._update_now_info()
             self.view.viewport().update()
+
+    # ================================================================ lembretes e gravações agendadas
+    REMIND_BEFORE = 60           # aviso 1 min antes
+    RECORD_BEFORE = 60           # gravação começa 1 min antes...
+    RECORD_AFTER = 120           # ...e termina 2 min depois (programas costumam atrasar)
+
+    def schedule_items(self):
+        return sorted(self.cfg["schedule"], key=lambda i: i["start"])
+
+    def scheduled_kinds(self, ch, start):
+        return {i["kind"] for i in self.cfg["schedule"] if i["ch"]["url"] == ch.url and i["start"] == start}
+
+    def toggle_schedule(self, kind, ch, start, stop, title):
+        items = self.cfg["schedule"]
+        found = [i for i in items if i["kind"] == kind and i["ch"]["url"] == ch.url and i["start"] == start]
+        if found:
+            self.cancel_schedule(found[0])
+            return False
+        items.append({"kind": kind, "ch": ch.__dict__.copy(), "start": start, "stop": stop, "title": title,
+                      "state": "waiting"})
+        self.cfg.save()
+        log.info("Agendado (%s): %s em %s às %s", kind, title, ch.name, time.strftime("%d/%m %H:%M",
+                                                                                  time.localtime(start)))
+        return True
+
+    def cancel_schedule(self, item):
+        if item.get("state") == "recording" and self.recorder.active:
+            self._stop_scheduled_recording(item)
+        if item in self.cfg["schedule"]:
+            self.cfg["schedule"].remove(item)
+            self.cfg.save()
+
+    def _notify(self, title, text, ch=None):
+        """Aviso do Windows (canto da tela); clicar nele leva ao canal."""
+        from PyQt6.QtWidgets import QSystemTrayIcon
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        if not getattr(self, "tray", None):
+            self.tray = QSystemTrayIcon(app_icon(), self)
+            self.tray.setToolTip("IPTV Player")
+            self.tray.messageClicked.connect(self._notify_clicked)
+            self.tray.show()
+        self._notify_ch = ch
+        self.tray.showMessage(title, text, app_icon(), 15000)
+
+    def _notify_clicked(self):
+        ch = getattr(self, "_notify_ch", None)
+        if ch:
+            self.showNormal() if self.isMinimized() else None
+            self.raise_()
+            self.activateWindow()
+            self.play(ch)
+
+    def _check_schedule(self, now):
+        changed = False
+        for item in list(self.cfg["schedule"]):
+            ch = Channel.from_dict(item["ch"])
+            if item["kind"] == "remind":
+                if now >= item["start"] - self.REMIND_BEFORE:
+                    if now < item["stop"]:
+                        self._notify(f"Vai começar: {item['title']}",
+                                     f"{ch.name} às {time.strftime('%H:%M', time.localtime(item['start']))}"
+                                     " — clique para assistir", ch)
+                        self._info(f"🔔 {item['title']} vai começar em {ch.name}", 15)
+                    self.cfg["schedule"].remove(item)
+                    changed = True
+            elif item["state"] == "waiting" and now >= item["start"] - self.RECORD_BEFORE:
+                if now >= item["stop"]:
+                    self.cfg["schedule"].remove(item)  # o programa já acabou (o programa estava fechado)
+                    changed = True
+                elif self.recorder.active:
+                    log.warning("Gravação agendada de %s não começou: já há outra gravação", item["title"])
+                    self._notify("Gravação não começou", f"{item['title']}: já há outra gravação em andamento")
+                    self.cfg["schedule"].remove(item)
+                    changed = True
+                else:
+                    self.record_channel(ch)
+                    item["state"] = "recording"
+                    changed = True
+                    log.info("Gravação agendada começou: %s em %s", item["title"], ch.name)
+                    self._notify("Gravando", f"{item['title']} em {ch.name}")
+            elif item["state"] == "recording" and now >= item["stop"] + self.RECORD_AFTER:
+                self._stop_scheduled_recording(item)
+                self.cfg["schedule"].remove(item)
+                changed = True
+        if changed:
+            self.cfg.save()
+
+    def _stop_scheduled_recording(self, item):
+        path = self.recorder.stop()
+        self.rec_btn.setChecked(False)
+        self.info_lbl.setText("")
+        log.info("Gravação agendada terminou: %s (%s)", item["title"], path)
+        if path:
+            self._notify("Gravação concluída", f"{item['title']} — salvo em Vídeos\\IPTV Player")
 
     # ================================================================ timer para desligar
     def _sleep_menu(self):

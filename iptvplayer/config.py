@@ -27,6 +27,7 @@ DEFAULTS = {
     "captions": False, "cap_model": "small", "cap_source": "auto", "cap_original": False, "cap_scale": 1.0, "cap_translator": "google",
     "dub_voice": "", "dub_duck": 0.25,
     "timeshift": True, "timeshift_minutes": 30,
+    "schedule": [],
 }
 
 

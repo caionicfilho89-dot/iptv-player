@@ -255,14 +255,17 @@ class AddListDialog(QDialog):
 
 
 class GuideDialog(QDialog):
-    def __init__(self, ch, schedule, parent=None):
+    """Programação do canal; um programa selecionado pode ser lembrado ou gravado."""
+
+    def __init__(self, ch, schedule, parent=None, scheduler=None):
         super().__init__(parent)
+        self.ch, self.scheduler = ch, scheduler
         self.setWindowTitle(f"Guia — {ch.name}")
-        self.setMinimumSize(520, 520)
+        self.setMinimumSize(560, 600)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 14, 18, 16)
         lay.addWidget(QLabel(ch.name, objectName="h2"))
-        lst = QListWidget()
+        self.lst = lst = QListWidget()
         lst.setWordWrap(True)
         lst.setStyleSheet("QListWidget::item { padding: 8px 6px; border-bottom: 1px solid %s; }" % T["border"])
         now = time.time()
@@ -279,17 +282,96 @@ class GuideDialog(QDialog):
                 lst.addItem(sep)
                 last_day = day
             live = start <= now < stop
-            txt = f"{time.strftime('%H:%M', time.localtime(start))}   {title}"
             if live:
-                txt += "   ● AGORA"
                 cur_row = lst.count()
-            it = QListWidgetItem(txt + (f"\n{desc}" if desc else ""))
+            it = QListWidgetItem()
+            it.setData(Qt.ItemDataRole.UserRole, (start, stop, title, desc))
             if live:
                 f = it.font()
                 f.setBold(True)
                 it.setFont(f)
             lst.addItem(it)
+            self._paint(it)
         if lst.count() == 0:
             lst.addItem("Sem programação disponível para este canal.")
         lay.addWidget(lst, 1)
         lst.scrollToItem(lst.item(cur_row), QListWidget.ScrollHint.PositionAtTop)
+        if scheduler:
+            self.remind_btn = QPushButton("🔔  Lembrar")
+            self.remind_btn.setToolTip("Aviso 1 minuto antes de começar; clique no aviso para ir ao canal")
+            self.rec_btn = QPushButton("●  Gravar")
+            self.rec_btn.setToolTip("Grava sozinho do começo ao fim (o programa precisa estar aberto)")
+            self.remind_btn.clicked.connect(lambda: self._toggle("remind"))
+            self.rec_btn.clicked.connect(lambda: self._toggle("record"))
+            all_btn = QPushButton("Agendamentos…")
+            all_btn.clicked.connect(self._show_all)
+            lay.addLayout(_row(self.remind_btn, self.rec_btn, all_btn))
+            lst.currentItemChanged.connect(self._update_buttons)
+            self._update_buttons()
+
+    def _prog(self, it=None):
+        it = it or self.lst.currentItem()
+        return it.data(Qt.ItemDataRole.UserRole) if it else None
+
+    def _paint(self, it):
+        start, stop, title, desc = it.data(Qt.ItemDataRole.UserRole)
+        txt = f"{time.strftime('%H:%M', time.localtime(start))}   {title}"
+        if start <= time.time() < stop:
+            txt += "   ● AGORA"
+        if self.scheduler:
+            kinds = self.scheduler.scheduled_kinds(self.ch, start)
+            txt += "   🔔" * ("remind" in kinds) + "   ● REC agendado" * ("record" in kinds)
+        it.setText(txt + (f"\n{desc}" if desc else ""))
+
+    def _update_buttons(self, *_):
+        p = self._prog()
+        now = time.time()
+        kinds = self.scheduler.scheduled_kinds(self.ch, p[0]) if p else set()
+        self.remind_btn.setEnabled(bool(p) and p[0] > now)
+        self.rec_btn.setEnabled(bool(p) and p[1] > now)
+        self.remind_btn.setText("🔔  Não lembrar" if "remind" in kinds else "🔔  Lembrar")
+        self.rec_btn.setText("●  Não gravar" if "record" in kinds else "●  Gravar")
+
+    def _toggle(self, kind):
+        p = self._prog()
+        if p:
+            self.scheduler.toggle_schedule(kind, self.ch, p[0], p[1], p[2])
+            self._paint(self.lst.currentItem())
+            self._update_buttons()
+
+    def _show_all(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Agendamentos")
+        dlg.setMinimumSize(520, 360)
+        v = QVBoxLayout(dlg)
+        lst = QListWidget()
+        v.addWidget(lst, 1)
+
+        def fill():
+            lst.clear()
+            for item in self.scheduler.schedule_items():
+                when = time.strftime("%d/%m %H:%M", time.localtime(item["start"]))
+                kind = "● Gravar" if item["kind"] == "record" else "🔔 Lembrar"
+                it = QListWidgetItem(f"{when}   {kind}   {item['title']}   —   {item['ch']['name']}")
+                it.setData(Qt.ItemDataRole.UserRole, item)
+                lst.addItem(it)
+            if not lst.count():
+                lst.addItem("Nenhum lembrete ou gravação agendada.")
+
+        def cancel():
+            it = lst.currentItem()
+            item = it.data(Qt.ItemDataRole.UserRole) if it else None
+            if item:
+                self.scheduler.cancel_schedule(item)
+                fill()
+                for i in range(self.lst.count()):
+                    if self.lst.item(i).data(Qt.ItemDataRole.UserRole):
+                        self._paint(self.lst.item(i))
+                self._update_buttons()
+        fill()
+        rm = QPushButton("Cancelar o selecionado")
+        rm.clicked.connect(cancel)
+        close = QPushButton("Fechar")
+        close.clicked.connect(dlg.accept)
+        v.addLayout(_row(rm, close))
+        dlg.exec()
