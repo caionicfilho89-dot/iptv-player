@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
 from . import APP_VERSION
 from .captions import CUDA_DOWNLOAD_MB, GPU_MODEL, MODELS, SOURCE_LANGS, cuda_ready, gpu_available
 from .config import DEFAULT_EPG_URLS
-from .dub import voices
+from .dub import DEFAULT_VOICE, voices
 from .log import LOG_FILE
 from .theme import ACCENTS, T
 from .widgets import make_btn
@@ -118,9 +118,10 @@ class SettingsDialog(QDialog):
         self.cap_original.setChecked(cfg["cap_original"])
         lay.addLayout(_row(QLabel("Tamanho da legenda"), self.cap_scale, self.cap_original))
         self.dub_voice = QComboBox()
-        for name in voices() or ["Voz padrão do Windows"]:
-            self.dub_voice.addItem(name.replace("Microsoft ", "").split(" - ")[0], name)
-        self.dub_voice.setCurrentIndex(max(0, self.dub_voice.findData(cfg["dub_voice"])))
+        for key, label in voices():
+            self.dub_voice.addItem(label, key)
+        cur = cfg["dub_voice"] or DEFAULT_VOICE
+        self.dub_voice.setCurrentIndex(max(0, self.dub_voice.findData(cur if ":" in cur else f"sapi:{cur}")))
         self.dub_duck = QComboBox()
         for label, v in (("Bem baixo", 0.12), ("Baixo", 0.25), ("Médio", 0.45)):
             self.dub_duck.addItem(label, v)

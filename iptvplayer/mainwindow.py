@@ -1818,7 +1818,7 @@ class MainWindow(QMainWindow):
             self.audio.duck_level = self.cfg["dub_duck"]
             self.audio.ai_sink = lambda block: self.captions and self.captions.feed(block)
             self.audio.attach(self.player)
-            self.dubber = Dubber(self.audio, self.cfg["dub_voice"], self)
+            self._new_dubber()
             if not self.captions:
                 self._start_caption_worker()
             self.captions.use_tap(True)
@@ -1836,6 +1836,10 @@ class MainWindow(QMainWindow):
                 self.captions.set_active(self.cc_btn.isChecked())
             self.player.audio_set_volume(self.vol.value())
         self._replay()
+
+    def _new_dubber(self):
+        self.dubber = Dubber(self.audio, self.cfg["dub_voice"], self)
+        self.dubber.status.connect(lambda t: self._info(t, 8) if t else self.info_lbl.setText(""))
 
     def _start_caption_worker(self):
         w = CaptionWorker(self.cfg["cap_model"], self.cfg["cap_source"])
@@ -2012,7 +2016,7 @@ class MainWindow(QMainWindow):
         self.audio.duck_level = self.cfg["dub_duck"]
         if self.dubber and self.cfg["dub_voice"] != old_voice:
             self.dubber.stop()
-            self.dubber = Dubber(self.audio, self.cfg["dub_voice"], self)
+            self._new_dubber()
         self.apply_theme(self.cfg["theme"], self.cfg["accent"])  # desfaz a prévia se não salvou
         if (self.cfg["epg_enabled"], self.cfg["epg_urls"]) != old_epg:
             self._reload_epg()

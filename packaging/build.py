@@ -96,6 +96,9 @@ def main():
                        "PyQt6.QtMultimedia", "PyQt6.Qt3DCore", "tkinter") for a in ("--exclude-module", m)],
          # legendas por IA: DLLs do CTranslate2, modelo VAD do faster-whisper e cabeçalho COM do soundcard
          "--collect-binaries", "ctranslate2", "--collect-data", "faster_whisper", "--collect-data", "soundcard",
+         # vozes da dublagem: espeak-ng (DLL + dicionários) usado pelo Kokoro e pelo Piper
+         "--collect-all", "espeakng_loader", "--collect-all", "piper", "--collect-data", "kokoro_onnx",
+         "--collect-data", "phonemizer",
          # bibliotecas pesadas que só entrariam por importações opcionais (conversores de modelos etc.)
          *[a for m in ("torch", "torchvision", "torchaudio", "transformers", "tensorflow", "scipy", "pandas",
                        "sklearn", "matplotlib", "PIL", "botocore", "boto3", "grpc", "sympy", "IPython",

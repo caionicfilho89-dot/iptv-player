@@ -3,3 +3,7 @@ python-vlc>=3.0
 # legendas traduzidas por IA
 faster-whisper>=1.1
 soundcard>=0.4.3
+# dublagem por IA: vozes do Windows (comtypes) e vozes naturais (Kokoro/Piper)
+comtypes>=1.4
+kokoro-onnx>=0.4
+piper-tts>=1.3
