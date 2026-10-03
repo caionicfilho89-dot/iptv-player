@@ -1844,6 +1844,7 @@ class MainWindow(QMainWindow):
     def _start_caption_worker(self):
         w = CaptionWorker(self.cfg["cap_model"], self.cfg["cap_source"])
         w.caption.connect(self._on_caption)
+        w.partial.connect(lambda _o, t: self.cc_btn.isChecked() and self.subs.set_preview(t))
         w.status.connect(self._on_caption_status)
         w.failed.connect(self._on_caption_failed)
         w.finished.connect(w.deleteLater)
@@ -1855,7 +1856,7 @@ class MainWindow(QMainWindow):
     def _stop_caption_worker(self, wait=False):
         w, self.captions = self.captions, None
         if w:
-            for sig in (w.caption, w.status, w.failed):
+            for sig in (w.caption, w.partial, w.status, w.failed):
                 sig.disconnect()
             w.stop()
             if wait:

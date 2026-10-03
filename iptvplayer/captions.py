@@ -44,6 +44,8 @@ MIN_LEVEL = 0.0002
 MAX_BACKLOG = 12.0           # se a IA ficar para trás, descarta o áudio mais antigo
 JOIN_GAP = 3.0               # frase sem ponto final + próximo trecho em até 3 s = mesma frase
 MAX_JOIN = 220               # limite de caracteres ao juntar pedaços da mesma frase
+PARTIAL_EVERY = 1.0          # com placa de vídeo: prévia da frase a cada 1 s enquanto a pessoa fala
+PARTIAL_MIN = 1.2            # segundos de fala antes da primeira prévia
 RECHECK_EVERY = 6            # com o idioma fixado, confere de novo a cada 6 trechos (o canal pode mudar)
 
 MODELS = {  # nome -> (rótulo, tamanho aproximado do download em MB)
@@ -269,6 +271,7 @@ class Segmenter:
 class CaptionWorker(QThread):
     """Captura o áudio, transcreve e traduz em segundo plano."""
     caption = pyqtSignal(str, str, str, bool)   # original, tradução, idioma, substitui a última linha
+    partial = pyqtSignal(str, str)              # prévia da frase em andamento: original, tradução
     status = pyqtSignal(str)
     failed = pyqtSignal(str)
     ready = pyqtSignal()
@@ -420,6 +423,7 @@ class CaptionWorker(QThread):
             th = self._start_capture(capture_stop)
         self.status.emit("")
         seg = Segmenter()
+        last_partial = 0.0
         try:
             while self._active.is_set() and not self._stop.is_set():
                 if self._restart.is_set():
@@ -444,6 +448,10 @@ class CaptionWorker(QThread):
                 audio = seg.feed(block)
                 if audio is not None:
                     self._process(model, audio)
+                    last_partial = time.monotonic()
+                elif self.device == "cuda" and time.monotonic() - last_partial >= PARTIAL_EVERY:
+                    last_partial = time.monotonic()
+                    self._preview(model, seg)
         finally:
             capture_stop.set()
             if th:
@@ -527,6 +535,24 @@ class CaptionWorker(QThread):
         # frase cortada no meio: traduz a frase inteira (fica bem melhor) e troca a linha anterior
         self._tr_queue.put((self._gen, full, lang, join))
 
+    def _preview(self, model, seg):
+        """Prévia rápida do trecho que ainda está sendo falado (só com o idioma já conhecido)."""
+        import numpy as np
+        lang = self.source if self.source != "auto" else self.locked_lang
+        if not lang or len(seg.buf) * 0.1 < PARTIAL_MIN or self._tr_queue.qsize() > 1:
+            return
+        audio = np.concatenate(seg.buf)
+        peak = float(abs(audio).max())
+        if peak < MIN_LEVEL:
+            return
+        segments, _ = model.transcribe(audio * min(500.0, 0.9 / peak), language=lang, beam_size=1,
+                                       vad_filter=False, condition_on_previous_text=False,
+                                       without_timestamps=True)
+        text = re.sub(r"\s+", " ", " ".join(s.text.strip() for s in segments
+                                             if s.no_speech_prob < 0.6 and s.avg_logprob > -1.0)).strip()
+        if text and not is_garbage(text) and not self._reset.is_set():
+            self._tr_queue.put((self._gen, text, lang, None))  # None = prévia
+
     def _recheck_lang(self, model, audio):
         """O idioma fixado ainda vale? (troca de programa, comercial em outra língua…)"""
         try:
@@ -552,8 +578,14 @@ class CaptionWorker(QThread):
             gen, text, lang, replace = item
             if gen != self._gen:
                 continue  # o canal já mudou
+            if replace is None and not self._tr_queue.empty():
+                continue  # prévia velha: já chegou coisa mais nova
             translated = text if lang == TARGET else translate(text, lang)
-            if gen == self._gen and not self._stop.is_set():
+            if gen != self._gen or self._stop.is_set():
+                continue
+            if replace is None:
+                self.partial.emit(text, translated)
+            else:
                 self.caption.emit(text, translated, lang, replace)
 
 
@@ -567,6 +599,7 @@ class SubtitleOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.lines = deque(maxlen=2)   # (texto, original, expira_em)
+        self.preview = ""              # frase em andamento (mais clara, vira legenda na pausa)
         self.notice = ""
         self.scale = 1.0
         self.show_original = False
@@ -584,8 +617,13 @@ class SubtitleOverlay(QWidget):
         if visible:
             self.show()
 
+    def set_preview(self, text):
+        self.preview = text
+        self._relayout()
+
     def add(self, text, original="", replace=False):
         self.notice = ""
+        self.preview = ""
         if replace and self.lines:
             self.lines.pop()  # mesma frase, agora completa
         ttl = min(10.0, self.LINE_TTL + len(text) / 40)  # frase longa fica mais tempo na tela
@@ -598,6 +636,7 @@ class SubtitleOverlay(QWidget):
 
     def clear(self):
         self.lines.clear()
+        self.preview = ""
         self.notice = ""
         self._relayout()
 
@@ -631,6 +670,8 @@ class SubtitleOverlay(QWidget):
             if self.show_original and original:
                 items.append((original, True))
             items.append((text or original, False))
+        if self.preview:
+            items.append((self.preview, "preview"))
         return items
 
     def _relayout(self):
@@ -644,7 +685,7 @@ class SubtitleOverlay(QWidget):
         self._layout = []
         y, width = 0, 0
         for text, is_small in blocks:
-            fm = QFontMetrics(small if is_small else main)
+            fm = QFontMetrics(small if is_small and is_small != "preview" else main)
             r = fm.boundingRect(QRect(0, 0, max_w - 2 * pad_x, 2000),
                                 int(Qt.AlignmentFlag.AlignHCenter | Qt.TextFlag.TextWordWrap), text)
             w, h = r.width() + 2 * pad_x, r.height() + 2 * pad_y
@@ -671,9 +712,10 @@ class SubtitleOverlay(QWidget):
             box = QRectF((self.width() - w) / 2, y, w, h)
             path = QPainterPath()
             path.addRoundedRect(box, 6, 6)
-            p.fillPath(path, QColor(8, 8, 10, 150 if is_small else 185))
-            p.setFont(small if is_small else main)
-            p.setPen(QColor(200, 204, 214) if is_small else QColor(255, 255, 255))
+            preview = is_small == "preview"
+            p.fillPath(path, QColor(8, 8, 10, 150 if is_small and not preview else 185))
+            p.setFont(small if is_small and not preview else main)
+            p.setPen(QColor(205, 210, 222) if is_small else QColor(255, 255, 255))
             p.drawText(box.adjusted(12, 4, -12, -4), int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap),
                        text)
 
