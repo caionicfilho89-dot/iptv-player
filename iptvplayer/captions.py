@@ -291,7 +291,13 @@ class LocalTranslator:
                                       max_decoding_length=256)
         out = [self.tok.decode([self.tok.token_to_id(t) for t in r.hypotheses[0][1:]], skip_special_tokens=True)
                for r in res]
-        return re.sub(r"\s+([.,!?;:…])", r"\1", " ".join(o.strip() for o in out if o.strip()))
+        clean = []
+        for o in out:
+            # o NLLB às vezes inventa um diálogo ("- Como estás? - Bem."): fica só a primeira fala
+            o = re.split(r"(?<=[.!?])\s+-\s+", re.sub(r"^\s*-\s*", "", o.strip()))[0]
+            if o:
+                clean.append(o)
+        return re.sub(r"\s+([.,!?;:…])", r"\1", " ".join(clean))
 
 
 class Segmenter:
