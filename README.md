@@ -38,13 +38,23 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 - **Botão "1 min"**: rolagem automática que passa para o próximo canal da lista a cada minuto
 - **Explorar**: passa sozinho por **todos os canais de todas as listas**, pulando os offline e os que você já viu; a lista rola acompanhando
 - **Testar lista**: descobre em segundo plano quais canais estão no ar
+- **Teste automático** 🆕: a cada 6 horas o programa testa todos os canais e esconde os fora do ar
+- **Canais repetidos juntados** 🆕: o mesmo canal em SD/HD ou em listas diferentes aparece uma vez só (os outros
+  links viram reserva automática)
 - **Digite o número do canal** (como no controle remoto) para ir direto a ele
 
 **Assistir**
-- **Pausar e voltar a TV ao vivo** 🆕: o programa guarda os últimos minutos do canal enquanto você assiste —
+- **Pausar e voltar a TV ao vivo**: o programa guarda os últimos minutos do canal enquanto você assiste —
   pause e continue de onde parou, volte ou avance 30 s, e volte para o **ao vivo** com um clique
-- **Dublagem por IA** 🆕: ouça a tradução em português falada por uma voz do Windows, com o som original
-  mais baixo por baixo (botão do microfone ou `Ctrl+U`)
+- **Barra de tempo** 🆕 para arrastar a qualquer ponto do que foi guardado, e **salvar em vídeo o que acabou de
+  passar** (último 1, 5, 10 ou 30 minutos) 🆕 — também nos canais com áudio separado
+- **Dublagem por IA**: ouça a tradução em português, com o som original mais baixo por baixo (botão do
+  microfone ou `Ctrl+U`) — 🆕 vozes **naturais** (Dora e Alex), além das vozes do Windows
+- **Lembretes e gravação agendada** 🆕: no guia, escolha um programa e peça para lembrar (aviso do Windows) ou
+  gravar sozinho do começo ao fim
+- **Controle pelo celular** 🆕: aponte a câmera para o QR code e troque de canal, pause, volte e ajuste o volume
+  pelo celular (no mesmo Wi-Fi)
+- **Modo infantil** 🆕 com senha: só as categorias que você liberar aparecem
 - **Tela cheia com controles flutuantes** que aparecem ao mexer o mouse
 - **Janela flutuante (PiP)**: vídeo pequeno sempre visível enquanto você usa o PC
 - **Mosaico**: 2, 4 ou 9 canais ao mesmo tempo
@@ -96,6 +106,10 @@ Fotos vão para **Imagens\IPTV Player** e gravações para **Vídeos\IPTV Player
 Na primeira vez que você liga, o modelo de IA é baixado (cerca de 480 MB). Em **Configurações → Legendas
 traduzidas por IA** dá para escolher a qualidade (Rápido / Equilibrado / Preciso), fixar o idioma do canal,
 mudar o tamanho da legenda e mostrar também a frase original.
+
+As legendas agora mostram uma **prévia da frase** enquanto a pessoa ainda fala (com placa de vídeo), e há um
+**tradutor sem internet** (NLLB-200, ~620 MB, roda no PC) — escolha em *Configurações → Tradutor*. Com o Google,
+se a internet cair, o programa usa o tradutor do PC automaticamente (se ele já tiver sido baixado).
 
 **Tem placa de vídeo NVIDIA?** Escolha a qualidade **Máxima**: ela usa o modelo *large-v3-turbo* na placa de
 vídeo, que entende muito melhor idiomas menos comuns e responde em menos de 1 segundo. Na primeira vez são

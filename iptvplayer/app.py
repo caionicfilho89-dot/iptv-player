@@ -15,6 +15,9 @@ def main():
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("iptvplayer.app")
     setup_log(APP_VERSION)
+    if "--autoteste" in sys.argv:
+        from .selftest import run
+        sys.exit(0 if run() else 1)
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     cfg = Config()
