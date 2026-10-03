@@ -10,8 +10,8 @@ from PyQt6.QtWidgets import (
 
 from . import APP_VERSION
 from .captions import (
-    CUDA_DOWNLOAD_MB, GPU_MODEL, MODELS, NLLB_MB, SOURCE_LANGS, TRANSLATORS, cuda_ready, gpu_available,
-    nllb_ready,
+    CUDA_DOWNLOAD_MB, GPU_MODEL, LLM_MB, MODELS, NLLB_MB, SOURCE_LANGS, TRANSLATORS, cuda_ready, gpu_available,
+    llm_ready, nllb_ready,
 )
 from .config import DEFAULT_EPG_URLS
 from .dub import DEFAULT_VOICE, voices
@@ -121,6 +121,11 @@ class SettingsDialog(QDialog):
         for key, label in TRANSLATORS.items():
             if key == "local" and not nllb_ready():
                 label += f" · baixa {NLLB_MB} MB"
+            if key == "ia":
+                if not has_gpu:
+                    continue  # só com placa NVIDIA
+                if not llm_ready():
+                    label += f" · baixa {LLM_MB / 1000:.1f} GB"
             self.cap_translator.addItem(label, key)
         self.cap_translator.setCurrentIndex(max(0, self.cap_translator.findData(cfg["cap_translator"])))
         self.cap_translator.setToolTip("Com o Google, se a internet cair, o programa usa o tradutor do PC "

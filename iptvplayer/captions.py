@@ -223,7 +223,17 @@ def _dir_mb(path):
 
 
 # ---------------------------------------------------------------- tradução sem internet (NLLB-200)
-TRANSLATORS = {"google": "Google Tradutor (internet)", "local": "No próprio PC, sem internet (NLLB)"}
+TRANSLATORS = {"google": "Google Tradutor (internet)", "local": "No próprio PC, sem internet (NLLB)",
+               "ia": "IA na placa de vídeo — mais natural, usa o contexto (Gemma 3)"}
+LLM_REPO = "jncraton/gemma-3-4b-it-ct2-int8"
+LLM_DIR = CACHE / "llm" / "gemma3-4b"
+LLM_MB = 3700
+LLM_CONTEXT = 3                  # falas anteriores mandadas junto (o tradutor entende do que se fala)
+LLM_SYSTEM = ("Você traduz legendas de TV ao vivo para português do Brasil. O texto vem de reconhecimento "
+              "automático de voz e pode ter palavras erradas ou frases cortadas: use o contexto para entender o "
+              "sentido. Traduza só a fala pedida, de forma natural e fluente, como uma legenda profissional. "
+              "Mantenha nomes próprios. Responda apenas com a tradução, sem aspas, sem explicações e sem "
+              "alternativas.")
 NLLB_REPO = "JustFrederik/nllb-200-distilled-600M-ct2-int8"
 NLLB_DIR = CACHE / "nllb"
 NLLB_MB = 620
@@ -243,6 +253,80 @@ NLLB_CODES = {
     "cy": "cym_Latn", "eu": "eus_Latn", "gl": "glg_Latn", "be": "bel_Cyrl", "pt": "por_Latn",
 }
 SENTENCES = re.compile(r"(?<=[.!?…。！？])\s+")
+
+
+LANG_PT = {  # nomes dos idiomas para o pedido ao tradutor IA
+    "en": "inglês", "es": "espanhol", "fr": "francês", "it": "italiano", "de": "alemão", "ru": "russo",
+    "uk": "ucraniano", "ar": "árabe", "tr": "turco", "el": "grego", "he": "hebraico", "fa": "persa", "hi": "hindi",
+    "ja": "japonês", "ko": "coreano", "zh": "chinês", "id": "indonésio", "vi": "vietnamita", "th": "tailandês",
+    "nl": "holandês", "sv": "sueco", "pl": "polonês", "ro": "romeno", "sq": "albanês", "ca": "catalão",
+    "cs": "tcheco", "hu": "húngaro", "bg": "búlgaro", "sr": "sérvio", "hr": "croata", "bs": "bósnio",
+    "da": "dinamarquês", "no": "norueguês", "fi": "finlandês", "ta": "tâmil", "bn": "bengali", "ur": "urdu",
+    "ms": "malaio", "tl": "tagalo", "mk": "macedônio", "sk": "eslovaco", "sl": "esloveno", "pt": "português",
+}
+
+
+def llm_ready():
+    return (LLM_DIR / "model.bin").exists() and (LLM_DIR / "tokenizer.json").exists()
+
+
+class LLMTranslator:
+    """Tradução por um modelo de linguagem (Gemma 3 4B) na placa de vídeo, com as falas anteriores como
+    contexto: corrige erros de reconhecimento e escreve em português natural."""
+
+    def __init__(self):
+        import ctranslate2
+        from tokenizers import Tokenizer
+        self.tok = Tokenizer.from_file(str(LLM_DIR / "tokenizer.json"))
+        self.gen = None
+        # o Gemma transborda em float16; bfloat16 só existe nas placas RTX 30 em diante
+        for compute in ("int8_bfloat16", "int8_float32"):
+            try:
+                self.gen = ctranslate2.Generator(str(LLM_DIR), device="cuda", compute_type=compute)
+                self.compute = compute
+                break
+            except (ValueError, RuntimeError) as e:
+                log.info("Tradutor IA: %s indisponível (%s)", compute, e)
+        if self.gen is None:
+            raise RuntimeError("a placa de vídeo não conseguiu carregar o tradutor IA")
+
+    @staticmethod
+    def download(progress, cancelled):
+        from huggingface_hub import snapshot_download
+        result = {}
+
+        def dl():
+            try:
+                snapshot_download(LLM_REPO, local_dir=str(LLM_DIR))
+            except Exception as e:  # noqa: BLE001
+                result["error"] = e
+        t = threading.Thread(target=dl, daemon=True)
+        t.start()
+        while t.is_alive():
+            if cancelled():
+                raise RuntimeError("cancelado")
+            progress(_dir_mb(LLM_DIR))
+            t.join(0.7)
+        if "error" in result:
+            raise result["error"]
+
+    def translate(self, text, src, context=()):
+        lang = LANG_PT.get(src) or SOURCE_LANGS.get(src, src).lower()
+        user = ""
+        if context:
+            user += "Contexto, falas anteriores (NÃO traduza):\n" + "\n".join(context) + "\n\n"
+        user += f"Traduza APENAS este trecho do {lang}:\n<<<{text}>>>"
+        prompt = f"<bos><start_of_turn>user\n{LLM_SYSTEM}\n\n{user}<end_of_turn>\n<start_of_turn>model\n"
+        tokens = self.tok.encode(prompt, add_special_tokens=False).tokens
+        n_in = len(self.tok.encode(text, add_special_tokens=False).ids)
+        res = self.gen.generate_batch([tokens], max_length=min(300, 3 * n_in + 30), sampling_topk=1,
+                                      include_prompt_in_result=False, end_token=["<end_of_turn>", "<eos>"])
+        out = self.tok.decode(res[0].sequences_ids[0], skip_special_tokens=True).strip()
+        out = out.split("\n\n")[0]  # às vezes ele oferece alternativas
+        lines = [x.strip() for x in out.splitlines() if x.strip()]
+        if len(lines) > 1 and context:
+            out = lines[-1]  # traduziu o contexto junto: a fala pedida é a última
+        return out.replace("<<<", "").replace(">>>", "").strip().strip('"“”«»').strip()
 
 
 def nllb_ready():
@@ -373,6 +457,9 @@ class CaptionWorker(QThread):
         self.translator = translator if translator in TRANSLATORS else "google"
         self._local = None            # LocalTranslator, carregado só quando precisa
         self._local_failed = False
+        self._llm = None              # LLMTranslator (tradutor IA), carregado só quando precisa
+        self._llm_failed = False
+        self._context = deque(maxlen=LLM_CONTEXT)   # falas originais anteriores (contexto do tradutor IA)
         self.tap_mode = False         # True: o som vem direto do player (dublagem), não da caixa de som
         self._restart = threading.Event()
 
@@ -448,7 +535,8 @@ class CaptionWorker(QThread):
                 _enable_cuda_dirs()
                 path = self._fetch(name)
                 self.status.emit("Carregando a IA de legendas na placa de vídeo…")
-                model = WhisperModel(str(path), device="cuda", compute_type="float16")
+                # int8: reconhece igual, é mais rápido e sobra memória da placa para o tradutor IA
+                model = WhisperModel(str(path), device="cuda", compute_type="int8_float16")
                 import numpy as np
                 list(model.transcribe(np.zeros(RATE, np.float32))[0])  # testa as DLLs da placa de verdade
                 self.device = "cuda"
@@ -564,6 +652,7 @@ class CaptionWorker(QThread):
 
     def _forget(self):
         self._gen += 1
+        self._context.clear()
         self._lang_votes.clear()
         self._mismatch = self._count = 0
         self._last = None
@@ -672,6 +761,38 @@ class CaptionWorker(QThread):
             log.exception("Tradução sem internet falhou")
             return ""
 
+    def _translate_llm(self, text, lang, replace):
+        if self._llm is None and not self._llm_failed:
+            try:
+                if self.device != "cuda":
+                    raise RuntimeError("o tradutor IA precisa da placa de vídeo NVIDIA")
+                if not llm_ready():
+                    LLMTranslator.download(
+                        lambda mb: self.status.emit(f"Baixando o tradutor IA ({mb:.0f} de ~{LLM_MB} MB)"
+                                                    " — só na primeira vez…"), self._stop.is_set)
+                self.status.emit("Carregando o tradutor IA na placa de vídeo…")
+                self._llm = LLMTranslator()
+                self.status.emit("")
+                log.info("Tradução: IA (Gemma 3) na placa de vídeo (%s)", self._llm.compute)
+            except Exception:  # noqa: BLE001 - sem memória na placa, sem internet…: segue com o Google
+                log.exception("Tradutor IA indisponível; usando o Google")
+                self.status.emit("")
+                self._llm_failed = True
+        context = list(self._context)
+        if replace and context:
+            context = context[:-1]  # a fala anterior é esta mesma, agora completa
+        out = ""
+        if self._llm:
+            try:
+                out = self._llm.translate(text, lang, context)
+            except Exception:  # noqa: BLE001
+                log.exception("Tradutor IA falhou nesta frase")
+        if replace and self._context:
+            self._context[-1] = text
+        else:
+            self._context.append(text)
+        return out or translate(text, lang)
+
     def _translate_loop(self):
         while True:
             item = self._tr_queue.get()
@@ -684,6 +805,8 @@ class CaptionWorker(QThread):
                 continue  # prévia velha: já chegou coisa mais nova
             if lang == TARGET:
                 translated = text
+            elif self.translator == "ia" and replace is not None:  # prévias ficam no Google (instantâneo)
+                translated = self._translate_llm(text, lang, replace)
             elif self.translator == "local":
                 translated = self._translate_local(text, lang)
             else:

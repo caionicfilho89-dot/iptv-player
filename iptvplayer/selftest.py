@@ -52,6 +52,17 @@ def run():
         return repr(captions.LocalTranslator("cpu").translate("Good evening and welcome.", "en"))
     results.append(_check("Tradutor sem internet", tradutor_local))
 
+    def tradutor_ia():
+        if not captions.llm_ready():
+            return "não baixado"
+        if not captions.gpu_available():
+            return "sem placa NVIDIA"
+        captions._enable_cuda_dirs()
+        t = captions.LLMTranslator()
+        return f"{t.compute}: " + repr(t.translate("The match was amazing and the fans kept singing.", "en",
+                                                   ["Good evening, here are the sports news."]))
+    results.append(_check("Tradutor IA (Gemma 3)", tradutor_ia))
+
     def vozes_windows():
         # numa tarefa própria, como na dublagem (o COM desta tarefa já foi iniciado por outra biblioteca)
         import threading
