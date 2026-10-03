@@ -263,6 +263,59 @@ class AddListDialog(QDialog):
         return self.name.text().strip(), self.url.text().strip()
 
 
+def pin_hash(pin):
+    import hashlib
+    return hashlib.sha256(("iptv-player-kids:" + pin).encode()).hexdigest()
+
+
+class KidsDialog(QDialog):
+    """Cria a senha do modo infantil e escolhe as categorias liberadas."""
+
+    def __init__(self, cfg, categories, parent=None):
+        super().__init__(parent)
+        self.cfg = cfg
+        self.setWindowTitle("Modo infantil")
+        self.setMinimumWidth(460)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 16)
+        lay.addWidget(QLabel("Modo infantil", objectName="h2"))
+        lay.addWidget(QLabel("Só as categorias marcadas aparecem. Configurações, listas e o modo Explorar "
+                             "ficam bloqueados. Para sair, é preciso a senha.", wordWrap=True, objectName="muted"))
+        self.cats = QListWidget()
+        for key, label in categories:
+            it = QListWidgetItem(label)
+            it.setData(Qt.ItemDataRole.UserRole, key)
+            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            it.setCheckState(Qt.CheckState.Checked if key in cfg["kids_cats"] else Qt.CheckState.Unchecked)
+            self.cats.addItem(it)
+        lay.addWidget(self.cats, 1)
+        self.pin1 = QLineEdit(placeholderText="Senha (4 números)", echoMode=QLineEdit.EchoMode.Password,
+                              maxLength=8)
+        self.pin2 = QLineEdit(placeholderText="Repita a senha", echoMode=QLineEdit.EchoMode.Password, maxLength=8)
+        lay.addLayout(_row(self.pin1, self.pin2))
+        self.err = QLabel("", objectName="muted")
+        lay.addWidget(self.err)
+        ok = QPushButton("Ligar o modo infantil", objectName="primary")
+        ok.clicked.connect(self._ok)
+        cancel = QPushButton("Cancelar")
+        cancel.clicked.connect(self.reject)
+        lay.addLayout(_row(cancel, ok))
+
+    def _ok(self):
+        keys = [self.cats.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.cats.count())
+                if self.cats.item(i).checkState() == Qt.CheckState.Checked]
+        p1, p2 = self.pin1.text().strip(), self.pin2.text().strip()
+        if not keys:
+            return self.err.setText("Marque pelo menos uma categoria.")
+        if len(p1) < 4 or not p1.isdigit():
+            return self.err.setText("A senha precisa ter pelo menos 4 números.")
+        if p1 != p2:
+            return self.err.setText("As senhas não são iguais.")
+        self.cfg["kids_cats"] = keys
+        self.cfg["kids_pin"] = pin_hash(p1)
+        self.accept()
+
+
 class GuideDialog(QDialog):
     """Programação do canal; um programa selecionado pode ser lembrado ou gravado."""
 

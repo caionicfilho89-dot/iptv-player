@@ -11,7 +11,8 @@ from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRect, QSize, Qt, QTimer, Q
 from PyQt6.QtGui import QColor, QCursor, QDesktopServices, QFont, QGuiApplication, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply
 from PyQt6.QtWidgets import (
-    QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit, QListView,
+    QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QListView,
     QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QSizePolicy,
     QSlider, QSpinBox, QSplitter, QVBoxLayout, QWidget,
 )
@@ -24,7 +25,7 @@ from .captions import CaptionWorker, SubtitleOverlay, missing_deps, video_rect_g
 from .config import DEAD_TTL, Config
 from .discovery import MAX_ALT_TRIES, ExploredSet, LinkIndex, NewChannels, list_urls
 from .discovery import _norm_name as norm_channel_name
-from .dialogs import AddListDialog, GuideDialog, SettingsDialog
+from .dialogs import AddListDialog, GuideDialog, KidsDialog, SettingsDialog, pin_hash
 from .epg import EpgManager
 from .log import log
 from .m3u import Channel, header_epg_urls, parse_m3u
@@ -174,6 +175,7 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(QByteArray.fromHex(self.cfg["geometry"].encode()))
             self.start_maximized = False
         self._set_view_mode(self.cfg["view_mode"])
+        self._kids_button_text()
         self._select_category(self.cfg["last_category"])
         last = next((c for c in self.all_channels if c.url == self.cfg["last_url"]), None)
         if last:
@@ -212,7 +214,8 @@ class MainWindow(QMainWindow):
                                       icon_size=16)
         self.update_banner.hide()
         sl.addWidget(self.update_banner)
-        for name, text, slot in (("phone", "Controle pelo celular", self.open_remote),
+        for name, text, slot in (("smile", "Modo infantil", self.toggle_kids),
+                                 ("phone", "Controle pelo celular", self.open_remote),
                                  ("plus", "Adicionar lista", self.add_list),
                                  ("refresh", "Atualizar canais", lambda: self.update_lists()),
                                  ("settings", "Configurações", self.open_settings)):
@@ -564,13 +567,19 @@ class MainWindow(QMainWindow):
             it.setSizeHint(QSize(10, 12 if self._compact else 30))
             self.nav.addItem(it)
 
-        add(src.FAV_KEY, "Favoritos", "star")
-        add(src.RECENT_KEY, "Recentes", "clock")
-        add(src.NEW_KEY, f"Novos ({len(self.newch)})" if len(self.newch) else "Novos", "sparkle")
-        section("Canais")
-        for key, label, ic in src.builtin_entries():
-            add(key, label, ic)
-        if self.cfg["custom_sources"]:
+        if self.cfg["kids"]:
+            section("Modo infantil")
+            for key, label, ic in self._all_categories():
+                if key in self.cfg["kids_cats"]:
+                    add(key, label, ic)
+        else:
+            add(src.FAV_KEY, "Favoritos", "star")
+            add(src.RECENT_KEY, "Recentes", "clock")
+            add(src.NEW_KEY, f"Novos ({len(self.newch)})" if len(self.newch) else "Novos", "sparkle")
+            section("Canais")
+            for key, label, ic in src.builtin_entries():
+                add(key, label, ic)
+        if self.cfg["custom_sources"] and not self.cfg["kids"]:
             section("Minhas listas")
             for s in self.cfg["custom_sources"]:
                 add(src.custom_key(s), s["name"], "link" if src.is_remote(s["url"]) else "folder")
@@ -584,7 +593,16 @@ class MainWindow(QMainWindow):
         if key:
             self._select_category(key, from_nav=True)
 
+    def _kids_block(self):
+        """No modo infantil, avisa e devolve True (a ação fica bloqueada)."""
+        if self.cfg["kids"]:
+            self._info("🔒 Bloqueado no modo infantil.", 5)
+            return True
+        return False
+
     def _nav_menu(self, pos):
+        if self.cfg["kids"]:
+            return
         it = self.nav.itemAt(pos)
         key = it.data(Qt.ItemDataRole.UserRole) if it else None
         if not key or key in src.SPECIAL_KEYS:
@@ -630,6 +648,8 @@ class MainWindow(QMainWindow):
         return self.playlists[key][0]
 
     def _select_category(self, key, from_nav=False):
+        if self.cfg["kids"] and key not in self.cfg["kids_cats"]:
+            key = self.cfg["kids_cats"][0]
         if not from_nav:
             for i in range(self.nav.count()):
                 if self.nav.item(i).data(Qt.ItemDataRole.UserRole) == key:
@@ -643,7 +663,7 @@ class MainWindow(QMainWindow):
         if self.cfg["merge_dupes"] and key not in src.SPECIAL_KEYS:
             self.all_channels, self.merged = self._merge_dupes(self.all_channels)
         self.numbers = {c.url: i + 1 for i, c in enumerate(self.all_channels)}
-        if key not in src.SPECIAL_KEYS:
+        if key not in src.SPECIAL_KEYS and not self.cfg["kids"]:
             self.cfg["last_category"] = key
         self.cat_title.setText(self._label_for(key))
         groups = sorted({c.group for c in self.all_channels if c.group})
@@ -794,6 +814,8 @@ class MainWindow(QMainWindow):
         self._reload_epg()
 
     def add_list(self):
+        if self._kids_block():
+            return
         dlg = AddListDialog(self)
         if dlg.exec():
             name, url = dlg.values()
@@ -1431,6 +1453,9 @@ class MainWindow(QMainWindow):
 
     # ================================================================ modo Explorar
     def _toggle_explore(self, on):
+        if on and self._kids_block():
+            self.explore_btn.setChecked(False)
+            return
         if on and self.zap_btn.isChecked():
             self.zap_btn.setChecked(False)
         self.zap_bar.setVisible(on)
@@ -1521,6 +1546,45 @@ class MainWindow(QMainWindow):
             self._update_now_info()
             self.view.viewport().update()
 
+    # ================================================================ modo infantil
+    def _all_categories(self):
+        out = list(src.builtin_entries())
+        out += [(src.custom_key(s), s["name"], "folder") for s in self.cfg["custom_sources"]]
+        return out
+
+    def _kids_button_text(self):
+        text = "Sair do modo infantil" if self.cfg["kids"] else "Modo infantil"
+        for b, t in self._side_btns:
+            if t in ("Modo infantil", "Sair do modo infantil"):
+                b.setText("" if self._compact else "  " + text)
+                b.setToolTip(text if self._compact else "")
+                self._side_btns[self._side_btns.index((b, t))] = (b, text)
+                break
+
+    def toggle_kids(self):
+        if self.cfg["kids"]:
+            pin, ok = QInputDialog.getText(self, "Sair do modo infantil", "Senha:", QLineEdit.EchoMode.Password)
+            if not ok:
+                return
+            if pin_hash(pin.strip()) != self.cfg["kids_pin"]:
+                log.warning("Modo infantil: senha errada")
+                return self._info(f"<span style='color:{T['bad']}'>Senha errada.</span>", 5)
+            self.cfg["kids"] = False
+            log.info("Modo infantil desligado")
+        else:
+            cats = [(k, label) for k, label, _ic in self._all_categories()]
+            if KidsDialog(self.cfg, cats, self).exec() != QDialog.DialogCode.Accepted:
+                return
+            self.cfg["kids"] = True
+            self.explore_btn.setChecked(False)
+            log.info("Modo infantil ligado: %s", ", ".join(self.cfg["kids_cats"]))
+        self.cfg.save()
+        self._kids_button_text()
+        self._build_nav()
+        self._select_category(self.cfg["kids_cats"][0] if self.cfg["kids"] else self.cfg["last_category"])
+        if self.cfg["kids"] and self.current and not any(c.url == self.current.url for c in self.all_channels):
+            self.stop()  # o canal que estava tocando não é de uma categoria liberada
+
     # ================================================================ controle pelo celular
     def open_remote(self):
         from PyQt6.QtWidgets import QDialog, QVBoxLayout
@@ -1570,8 +1634,9 @@ class MainWindow(QMainWindow):
     def _remote_state(self):
         st = self.player.get_state()
         cats = [(src.FAV_KEY, "Favoritos"), (src.RECENT_KEY, "Recentes")]
-        cats += [(k, label) for k, label, _ic in src.builtin_entries()]
-        cats += [(src.custom_key(s), s["name"]) for s in self.cfg["custom_sources"]]
+        cats += [(k, label) for k, label, _ic in self._all_categories()]
+        if self.cfg["kids"]:
+            cats = [c for c in cats if c[0] in self.cfg["kids_cats"]]
         self.remote.state = {
             "name": self.current.name if self.current else "",
             "url": self.current.url if self.current else "",
@@ -1609,7 +1674,7 @@ class MainWindow(QMainWindow):
             self.toggle_fullscreen()
         elif cmd == "play" and arg.isdigit() and int(arg) < len(self.visible):
             self.play(self.visible[int(arg)])
-        elif cmd == "cat" and arg:
+        elif cmd == "cat" and arg and (not self.cfg["kids"] or arg in self.cfg["kids_cats"]):
             self._select_category(arg)
         self._remote_state()
 
@@ -2287,6 +2352,8 @@ class MainWindow(QMainWindow):
 
     # ================================================================ configurações
     def open_settings(self):
+        if self._kids_block():
+            return
         dlg = SettingsDialog(self.cfg, self)
         dlg.theme_changed.connect(self.apply_theme)
         dlg.update_lists.connect(lambda: self.update_lists())

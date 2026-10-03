@@ -30,6 +30,7 @@ DEFAULTS = {
     "schedule": [],
     "remote": False, "remote_key": "",
     "auto_scan": True, "last_full_scan": 0, "merge_dupes": True,
+    "kids": False, "kids_pin": "", "kids_cats": ["infantil"],
 }
 
 
