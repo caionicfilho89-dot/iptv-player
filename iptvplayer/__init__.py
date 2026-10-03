@@ -1,4 +1,4 @@
 """IPTV Player — player de IPTV com troca automática de canais."""
 APP_NAME = "IPTV Player"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 REPO = "caionicfilho89-dot/iptv-player"

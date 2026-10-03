@@ -30,6 +30,7 @@ from .mosaic import MosaicWindow
 from .net import ListDownloader, LogoLoader, Scanner, make_request
 from .pip import PipWindow
 from .recorder import Recorder, snapshot_path
+from .timeshift import LIVE_DELAY_OPT, START_WAIT_MS, Timeshift, supports as timeshift_supports
 from .updater import UpdateDownloader, can_self_update, run_installer, setup_asset
 from .theme import T, app_icon, apply_theme, build_style, icon
 from .vlcload import vlc
@@ -121,6 +122,12 @@ class MainWindow(QMainWindow):
         self.overlay = FullscreenOverlay()
         self._wire_overlay()
         self.updater = None          # download da versão nova (atualização com um clique)
+        self.timeshift = Timeshift(self.cfg["timeshift_minutes"], self)
+        self.timeshift.ready.connect(self._ts_ready)
+        self.timeshift.failed.connect(self._ts_failed)
+        self._ts_sid = None          # sessão do buffer do canal atual (None = tocando direto)
+        self._ts_origin = 0.0        # início (s) do pedaço em que a mídia atual do VLC começou
+        self._paused_at = None       # ponto (ms) em que a pausa com buffer começou
         self.audio = AudioEngine()   # som tocado pelo programa enquanto a dublagem está ligada
         self.dubber = None
         self.captions = None         # IA de legendas (carregada na primeira vez que é ligada)
@@ -311,6 +318,13 @@ class MainWindow(QMainWindow):
         top.addWidget(self.play_btn)
         top.addWidget(make_btn("next", "Próximo canal (PgDn)", lambda: self.step(+1)))
         top.addWidget(make_btn("stop", "Parar", self.stop))
+        top.addSpacing(8)
+        self.back_btn = make_btn("back", "Voltar 30 segundos (Ctrl+←)", lambda: self.seek_relative(-30))
+        self.fwd_btn = make_btn("forward", "Avançar 30 segundos (Ctrl+→)", lambda: self.seek_relative(+30))
+        self.live_btn = make_btn("live", "Ir para o ao vivo (Ctrl+End)", self.go_live)
+        for b in (self.back_btn, self.fwd_btn, self.live_btn):
+            b.setEnabled(False)
+            top.addWidget(b)
         top.addSpacing(14)
         self.mute_btn = make_btn("volume", "Mudo (Ctrl+M)", self.toggle_mute)
         top.addWidget(self.mute_btn)
@@ -449,6 +463,9 @@ class MainWindow(QMainWindow):
         sc("Ctrl+L", self._toggle_view_mode)
         sc("Ctrl+T", self.cc_btn.toggle)
         sc("Ctrl+U", self.dub_btn.toggle)
+        sc("Ctrl+Left", lambda: self.seek_relative(-30))
+        sc("Ctrl+Right", lambda: self.seek_relative(+30))
+        sc("Ctrl+End", self.go_live)
         sc("Ctrl+E", self.explore_btn.toggle)
 
     def _escape(self):
@@ -854,11 +871,7 @@ class MainWindow(QMainWindow):
             fix = self.cfg["alt_links"].get(ch.url)
             stream = (fix["url"], fix["opts"]) if fix else (ch.url, ch.opts)
         self.stream = stream
-        media = self.instance.media_new(stream[0])
-        for o in stream[1]:
-            media.add_option(o)
-        self.player.set_media(media)
-        self.player.play()
+        self._open_stream(stream)
         if self.captions:
             self.captions.reset()
         if self.dubber:
@@ -878,6 +891,119 @@ class MainWindow(QMainWindow):
         set_btn_icon(self.overlay.play_btn, "pause")
         self._select_current_in_view()
         self.zap_left = self.zap_spin.value()
+
+    # ================================================================ pausar e voltar a TV ao vivo
+    def _open_stream(self, stream):
+        """Abre o canal pelo buffer local (pausar/voltar) quando dá; senão, direto como antes."""
+        self.player.stop()
+        self._ts_origin = 0.0
+        self._paused_at = None
+        self._ts_buttons()
+        if self.cfg["timeshift"] and timeshift_supports(stream[0]):
+            sid = self._ts_sid = self.timeshift.open(stream[0], stream[1])
+            QTimer.singleShot(START_WAIT_MS, lambda: self._ts_too_slow(sid))
+        else:
+            self._ts_sid = None
+            self.timeshift.close()
+            self._set_media(stream[0], stream[1])
+
+    def _set_media(self, url, opts):
+        media = self.instance.media_new(url)
+        for o in opts:
+            media.add_option(o)
+        self.player.set_media(media)
+        self.player.play()
+
+    def _ts_ready(self, sid, url):
+        if sid == self._ts_sid and self.current:
+            self.started_at = time.monotonic()  # o tempo guardando os primeiros pedaços não conta como demora
+            self._set_media(url, [LIVE_DELAY_OPT])
+
+    def _ts_failed(self, sid):
+        if sid != self._ts_sid:
+            return
+        if self.player.get_media() is None or self.player.get_state() in (vlc.State.Stopped,
+                                                                          vlc.State.NothingSpecial):
+            # o buffer não deu certo antes de começar: toca direto, como antes
+            self._ts_sid = None
+            if self.current:
+                self._set_media(*self.stream)
+        # se já estava tocando, o próprio monitor percebe quando o canal parar
+
+    def _ts_too_slow(self, sid):
+        if sid == self._ts_sid and self.player.get_media() is None or (
+                sid == self._ts_sid and self.player.get_state() in (vlc.State.Stopped, vlc.State.NothingSpecial)):
+            log.info("Timeshift: servidor lento, tocando direto")
+            self._ts_sid = None
+            self.timeshift.close()
+            if self.current:
+                self._set_media(*self.stream)
+
+    def _ts_active(self):
+        return self._ts_sid is not None and self.confirmed
+
+    def _ts_pos(self):
+        """Ponto que está na tela, em segundos desde que o canal abriu."""
+        return self._ts_origin + max(0, self.player.get_time()) / 1000
+
+    def _ts_live_point(self):
+        """Onde fica o "ao vivo": três pedaços antes do fim do que já foi guardado
+        (com menos o VLC fica esperando a lista crescer antes de começar)."""
+        _start, end = self.timeshift.span()
+        return max(0.0, end - 3 * self.timeshift.target())
+
+    def _ts_behind(self):
+        """Segundos atrás do ao vivo (0 = ao vivo)."""
+        base = self._paused_at if self._paused_at is not None else self._ts_pos()
+        return max(0.0, self._ts_live_point() - base)
+
+    def _ts_open_at(self, pos):
+        """Toca a partir do pedaço que contém pos. O VLC começa sempre do início da lista local,
+        então nunca precisa reposicionar dentro de um canal ao vivo (o que trava às vezes)."""
+        # um pedaço antes: o VLC às vezes começa no segundo pedaço da lista, e assim nada se perde
+        url, start = self.timeshift.url_at(pos - self.timeshift.target())
+        if not url:
+            return
+        self._ts_origin = start
+        self._paused_at = None
+        self._set_media(url, [LIVE_DELAY_OPT])
+        for b in (self.play_btn, self.overlay.play_btn):
+            set_btn_icon(b, "pause")
+        QTimer.singleShot(1500, self._ts_status)
+
+    def seek_relative(self, seconds):
+        if not self._ts_active():
+            return self._info("Este canal não permite voltar ou avançar." if self.current else "")
+        base = self._paused_at if self._paused_at is not None else self._ts_pos()
+        start, _end = self.timeshift.span()
+        self._ts_open_at(min(max(start, base + seconds), self._ts_live_point()))
+
+    def go_live(self):
+        if self._ts_active():
+            self._ts_open_at(self._ts_live_point())
+
+    def _ts_buttons(self):
+        on = self._ts_active()
+        for b in (self.back_btn, self.fwd_btn, self.live_btn):
+            b.setEnabled(on)
+
+    def _ts_status(self):
+        """Mostra "Ao vivo" ou quanto está atrás, e quanto o buffer já guardou."""
+        if not self._ts_active():
+            return
+        kept = self.timeshift.buffered()
+        self.live_btn.setToolTip(f"Ir para o ao vivo (Ctrl+End)\nGuardando os últimos "
+                                 f"{self.cfg['timeshift_minutes']} min — já tem {int(kept // 60)} min "
+                                 f"{int(kept % 60)} s")
+        behind = self._ts_behind()
+        if self._paused_at is not None:
+            m, s = divmod(int(behind), 60)
+            self._set_status(f"❚❚ Pausado — {m}:{s:02d} atrás do ao vivo", "warn")
+        elif behind > 2 * self.timeshift.target() + 5:  # folga: recarregar leva alguns segundos
+            m, s = divmod(int(behind), 60)
+            self._set_status(f"◷ {m}:{s:02d} atrás do ao vivo", "warn")
+        elif self._status[0].startswith(("◷", "❚❚")):
+            self._set_status("● Ao vivo", "ok")
 
     def _replay(self):
         if self.current:
@@ -951,6 +1077,7 @@ class MainWindow(QMainWindow):
             return self._on_fail("sem sinal" if st == vlc.State.Ended else "erro ao abrir")
         if st == vlc.State.Paused:
             self.last_progress = now
+            self._ts_status()  # o "atrás do ao vivo" continua aumentando durante a pausa
             return
         t = self.player.get_time()
         if not self.confirmed:
@@ -965,6 +1092,7 @@ class MainWindow(QMainWindow):
                 self._set_status("● Ao vivo", "ok")
                 self.video.set_message("")
                 self.player.audio_set_volume(self.vol.value())
+                self._ts_buttons()
                 num = self.numbers.get(self.current.url)
                 self._show_marquee(f"{num}  {self.current.name}" if num else self.current.name)
                 self._update_count()
@@ -975,6 +1103,7 @@ class MainWindow(QMainWindow):
             self.last_time, self.last_progress = t, now
             if self._status[0].startswith("↻"):
                 self._set_status("● Ao vivo", "ok")
+            self._ts_status()
         elif now - self.last_progress > STALL_TIMEOUT:
             if not self.retried:  # uma tentativa de reconexão antes de desistir
                 self.retried = True
@@ -1082,13 +1211,27 @@ class MainWindow(QMainWindow):
         if self.player.get_state() in (vlc.State.Stopped, vlc.State.Error, vlc.State.Ended,
                                        vlc.State.NothingSpecial):
             return self.play(self.current, force=True)
+        resuming = self.player.get_state() == vlc.State.Paused
+        if self._ts_active():
+            # com o buffer: pausa normal; ao continuar, toca de novo a partir do ponto da pausa
+            # (despausar um canal ao vivo faria o VLC pular para perto do "agora")
+            if resuming and self._paused_at is not None:
+                return self._ts_open_at(self._paused_at)
+            self._paused_at = self._ts_pos()
+            self.player.pause()
+            for b in (self.play_btn, self.overlay.play_btn):
+                set_btn_icon(b, "play")
+            return self._ts_status()
         self.player.pause()
-        paused = self.player.get_state() != vlc.State.Paused  # estado muda de forma assíncrona
+        paused = not resuming
         for b in (self.play_btn, self.overlay.play_btn):
             set_btn_icon(b, "play" if paused else "pause")
 
     def stop(self):
         self.player.stop()
+        self.timeshift.close()
+        self._ts_sid = None
+        self._ts_buttons()
         self.explore_btn.setChecked(False)
         if self.current and self.session_status.get(self.current.url) == "loading":
             self.session_status.pop(self.current.url)
@@ -1530,6 +1673,8 @@ class MainWindow(QMainWindow):
         self.dub_btn.setChecked(False)
         self._mosaic_prev = self.current
         self.player.stop()
+        self.timeshift.close()
+        self._ts_sid = None
         self.current = None
         self.video.set_message("Mosaico aberto em outra janela")
         self.mosaic = MosaicWindow(self.instance, pool, self.cfg["mosaic_size"], self.vol.value())
@@ -1813,6 +1958,7 @@ class MainWindow(QMainWindow):
             self.pip.close()
         self.overlay.close()
         self.player.stop()
+        self.timeshift.shutdown()
         if self.dubber:
             self.dubber.stop()
         self.audio.detach()

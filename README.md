@@ -25,7 +25,7 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 **Canais**
 - Listas por categoria (Brasil, Português, Filmes, Séries, Esportes, Notícias, Infantil…) **atualizadas
   automaticamente** a partir do [iptv-org](https://github.com/iptv-org/iptv)
-- **Mundo (Free-TV)** 🆕: mais ~1.300 canais abertos do mundo todo, da lista [Free-TV](https://github.com/Free-TV/IPTV)
+- **Mundo (Free-TV)**: mais ~1.300 canais abertos do mundo todo, da lista [Free-TV](https://github.com/Free-TV/IPTV)
 - **Adicione suas próprias listas** por link (ex.: a da sua operadora de IPTV) ou arquivo `.m3u`
 - **Guia de programação (EPG)**: o que está passando agora e a seguir, com barra de progresso
 - Busca, filtro por grupo, favoritos ⭐ e recentes
@@ -35,25 +35,29 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 **Troca automática**
 - **Pular canais offline**: se o canal não abrir, der erro ou travar, vai para o próximo sozinho
 - **Zapping automático** a cada N segundos, em ordem ou aleatório, também **só pelos favoritos**
-- **Botão "1 min"** 🆕: rolagem automática que passa para o próximo canal da lista a cada minuto
+- **Botão "1 min"**: rolagem automática que passa para o próximo canal da lista a cada minuto
 - **Explorar**: passa sozinho por **todos os canais de todas as listas**, pulando os offline e os que você já viu; a lista rola acompanhando
 - **Testar lista**: descobre em segundo plano quais canais estão no ar
 - **Digite o número do canal** (como no controle remoto) para ir direto a ele
 
 **Assistir**
+- **Pausar e voltar a TV ao vivo** 🆕: o programa guarda os últimos minutos do canal enquanto você assiste —
+  pause e continue de onde parou, volte ou avance 30 s, e volte para o **ao vivo** com um clique
+- **Dublagem por IA** 🆕: ouça a tradução em português falada por uma voz do Windows, com o som original
+  mais baixo por baixo (botão do microfone ou `Ctrl+U`)
 - **Tela cheia com controles flutuantes** que aparecem ao mexer o mouse
 - **Janela flutuante (PiP)**: vídeo pequeno sempre visível enquanto você usa o PC
 - **Mosaico**: 2, 4 ou 9 canais ao mesmo tempo
 - **Gravar canal** e **tirar foto da tela**
 - **Timer para desligar** (ou ao fim do programa atual)
 - **Legendas traduzidas por IA**: canais em inglês, espanhol, francês e outros idiomas ganham legenda em
-  português ao vivo, como a tradução automática do YouTube (botão **CC** ou `Ctrl+T`) — 🆕 agora traduz a
+  português ao vivo, como a tradução automática do YouTube (botão **CC** ou `Ctrl+T`) — agora traduz a
   frase inteira, funciona com o volume baixo e usa a **placa de vídeo NVIDIA** quando houver
 
 **Visual**
 - Modo **lista** ou **grade**, tema **escuro** ou **claro** e 6 cores de destaque
-- **Atualização com um clique** 🆕: quando sai uma versão nova, um clique baixa, instala e reabre o programa
-- **Registro de erros** 🆕 (Configurações → Abrir registro de erros), para descobrir por que algo não funcionou
+- **Atualização com um clique**: quando sai uma versão nova, um clique baixa, instala e reabre o programa
+- **Registro de erros** (Configurações → Abrir registro de erros), para descobrir por que algo não funcionou
 
 ![Modo grade e tema claro](docs/screenshot-grade.png)
 
@@ -77,6 +81,9 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 | `Ctrl+P` | Janela flutuante |
 | `Ctrl+L` | Alternar lista / grade |
 | `Ctrl+T` | Legendas traduzidas por IA |
+| `Ctrl+U` | Dublagem por IA |
+| `Ctrl+←` / `Ctrl+→` | Voltar / avançar 30 segundos |
+| `Ctrl+End` | Voltar para o ao vivo |
 
 Fotos vão para **Imagens\IPTV Player** e gravações para **Vídeos\IPTV Player**.
 

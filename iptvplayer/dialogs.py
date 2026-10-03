@@ -128,6 +128,17 @@ class SettingsDialog(QDialog):
         lay.addLayout(_row(QLabel("Voz da dublagem (Ctrl+U)"), self.dub_voice,
                            QLabel("Som original enquanto ela fala"), self.dub_duck))
 
+        lay.addWidget(QLabel("Pausar e voltar a TV ao vivo", objectName="h2"))
+        self.ts_on = QCheckBox("Guardar o canal enquanto assisto, para pausar, voltar e avançar")
+        self.ts_on.setChecked(cfg["timeshift"])
+        self.ts_minutes = QComboBox()
+        for label, v in (("15 minutos", 15), ("30 minutos", 30), ("1 hora", 60), ("2 horas", 120)):
+            self.ts_minutes.addItem(label, v)
+        self.ts_minutes.setCurrentIndex(max(0, self.ts_minutes.findData(cfg["timeshift_minutes"])))
+        self.ts_minutes.setToolTip("Quanto mais tempo, mais espaço em disco (cerca de 1 GB a cada 30 min em HD). "
+                                   "Tudo é apagado ao trocar de canal ou fechar o programa.")
+        lay.addLayout(_row(self.ts_on, QLabel("Guardar os últimos"), self.ts_minutes))
+
         lay.addWidget(QLabel("Geral", objectName="h2"))
         self.check_upd = QCheckBox("Avisar quando houver uma nova versão do IPTV Player")
         self.check_upd.setChecked(cfg["check_updates"])
@@ -172,6 +183,8 @@ class SettingsDialog(QDialog):
         self.cfg["cap_scale"] = self.cap_scale.currentData()
         self.cfg["cap_original"] = self.cap_original.isChecked()
         self.cfg["dub_voice"] = self.dub_voice.currentData()
+        self.cfg["timeshift"] = self.ts_on.isChecked()
+        self.cfg["timeshift_minutes"] = self.ts_minutes.currentData()
         self.cfg["dub_duck"] = self.dub_duck.currentData()
         self._save_epg_fields()
         self.cfg.save()
