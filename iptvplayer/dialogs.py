@@ -153,6 +153,13 @@ class SettingsDialog(QDialog):
         lay.addLayout(_row(self.ts_on, QLabel("Guardar os últimos"), self.ts_minutes))
 
         lay.addWidget(QLabel("Geral", objectName="h2"))
+        self.auto_scan = QCheckBox("Testar todos os canais em segundo plano a cada 6 horas (esconde os fora do ar "
+                                   "quando \"Ocultar offline\" está marcado)")
+        self.auto_scan.setChecked(cfg["auto_scan"])
+        lay.addWidget(self.auto_scan)
+        self.merge_dupes = QCheckBox("Juntar canais repetidos (fica o melhor link; os outros viram reserva)")
+        self.merge_dupes.setChecked(cfg["merge_dupes"])
+        lay.addWidget(self.merge_dupes)
         self.check_upd = QCheckBox("Avisar quando houver uma nova versão do IPTV Player")
         self.check_upd.setChecked(cfg["check_updates"])
         lay.addWidget(self.check_upd)
@@ -198,6 +205,8 @@ class SettingsDialog(QDialog):
         self.cfg["cap_translator"] = self.cap_translator.currentData()
         self.cfg["dub_voice"] = self.dub_voice.currentData()
         self.cfg["timeshift"] = self.ts_on.isChecked()
+        self.cfg["auto_scan"] = self.auto_scan.isChecked()
+        self.cfg["merge_dupes"] = self.merge_dupes.isChecked()
         self.cfg["timeshift_minutes"] = self.ts_minutes.currentData()
         self.cfg["dub_duck"] = self.dub_duck.currentData()
         self._save_epg_fields()

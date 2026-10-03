@@ -23,6 +23,7 @@ from .dub import Dubber
 from .captions import CaptionWorker, SubtitleOverlay, missing_deps, video_rect_global
 from .config import DEAD_TTL, Config
 from .discovery import MAX_ALT_TRIES, ExploredSet, LinkIndex, NewChannels, list_urls
+from .discovery import _norm_name as norm_channel_name
 from .dialogs import AddListDialog, GuideDialog, SettingsDialog
 from .epg import EpgManager
 from .log import log
@@ -41,6 +42,7 @@ from .widgets import (
     set_btn_icon,
 )
 
+AUTO_SCAN_EVERY = 6 * 3600   # teste automático de todos os canais (as marcas de offline duram 6 h)
 CONNECT_TIMEOUT = 15         # segundos para o canal começar a tocar
 STALL_TIMEOUT = 12           # segundos sem avançar = travado
 MAX_CONSECUTIVE_FAILS = 25   # evita loop infinito pulando canais
@@ -74,6 +76,12 @@ class MainWindow(QMainWindow):
         self.scanner.result.connect(self._on_scan_result)
         self.scanner.progress.connect(lambda d, t: self.count_lbl.setText(f"Testando… {d}/{t}"))
         self.scanner.finished.connect(self._on_scan_finished)
+        # teste automático de todos os canais (devagar, em segundo plano)
+        self.auto_scanner = Scanner(self, max_active=6)
+        self.auto_scanner.result.connect(self._on_auto_scan_result)
+        self.auto_scanner.finished.connect(self._on_auto_scan_finished)
+        self._auto_counts = [0, 0]
+        QTimer.singleShot(3 * 60 * 1000, self._maybe_auto_scan)
         self.downloader = ListDownloader(self)
         self.downloader.one_done.connect(self._on_list_done)
         self.downloader.progress.connect(lambda d, t: self._side_status(f"Atualizando listas… {d}/{t}"))
@@ -631,6 +639,9 @@ class MainWindow(QMainWindow):
                     break
         self.category = key
         self.all_channels = self._load_category(key)
+        self.merged = 0
+        if self.cfg["merge_dupes"] and key not in src.SPECIAL_KEYS:
+            self.all_channels, self.merged = self._merge_dupes(self.all_channels)
         self.numbers = {c.url: i + 1 for i, c in enumerate(self.all_channels)}
         if key not in src.SPECIAL_KEYS:
             self.cfg["last_category"] = key
@@ -665,6 +676,8 @@ class MainWindow(QMainWindow):
         txt = f"{len(self.visible)} canais"
         if dead:
             txt += f"  ·  {dead} offline"
+        if getattr(self, "merged", 0):
+            txt += f"  ·  {self.merged} repetidos juntados"
         if not self.all_channels and self.category == src.FAV_KEY:
             txt = "Sem favoritos ainda — use a estrela ★"
         if not self.all_channels and self.category == src.NEW_KEY:
@@ -1500,6 +1513,8 @@ class MainWindow(QMainWindow):
                                       f" · {self.recorder.ch.name} · {mb:.0f} MB")
         if int(now) % 5 == 0:
             self._check_schedule(now)
+        if int(now) % 600 == 0:
+            self._maybe_auto_scan()
         if self.remote.running:
             self._remote_state()
         if int(now) % 30 == 0:
@@ -1824,6 +1839,76 @@ class MainWindow(QMainWindow):
         m.exec(self.view.viewport().mapToGlobal(pos))
 
     # ================================================================ teste de lista
+    # ================================================================ canais repetidos e teste automático
+    def _merge_dupes(self, channels):
+        """Um canal por nome/ID do guia: fica o melhor link; os outros viram reserva automática
+        (os links alternativos são procurados pelo mesmo nome/ID quando o canal cai)."""
+        def score(c):
+            st = self.status_of(c.url)
+            q = int(re.sub(r"\D", "", c.quality) or 0)
+            return (st == "ok", st != "dead", q)
+        def key(c):
+            if c.tvg_id:  # mesma emissora em outra qualidade: AajTak.in@SD = AajTak.in@HD
+                base, _, feed = c.tvg_id.lower().partition("@")
+                return f"id:{base}@{re.sub(r'(fhd|uhd|hd|sd|4k)$', '', feed)}"
+            n = norm_channel_name(c.name)
+            return "nome:" + n if len(n) >= 3 else "url:" + c.url
+        groups, order = {}, []
+        for c in channels:
+            k = key(c)
+            if k not in groups:
+                groups[k] = c
+                order.append(k)
+            elif score(c) > score(groups[k]):
+                groups[k] = c
+        return [groups[k] for k in order], len(channels) - len(order)
+
+    def _maybe_auto_scan(self):
+        if (not self.cfg["auto_scan"] or self.auto_scanner.running
+                or time.time() - self.cfg["last_full_scan"] < AUTO_SCAN_EVERY):
+            return
+        seen, targets = set(), []
+        keys = [k for k, *_ in src.builtin_entries()] + [src.custom_key(s) for s in self.cfg["custom_sources"]]
+        for key in keys:
+            path = src.file_for(key, self.cfg["custom_sources"])
+            if not path:
+                continue
+            try:
+                chans = self.playlists[key][0] if key in self.playlists else parse_m3u(path)[0]
+            except OSError:
+                continue
+            for c in chans:
+                if c.url not in seen:
+                    seen.add(c.url)
+                    targets.append(c)
+        if not targets:
+            return
+        log.info("Teste automático: %d canais", len(targets))
+        self._auto_counts = [0, 0]
+        self.auto_scanner.start(targets)
+
+    def _on_auto_scan_result(self, url, ok):
+        if self.current and self.current.url == url:
+            return
+        self._auto_counts[0 if ok else 1] += 1
+        self.session_status[url] = "ok" if ok else "dead"
+        if ok:
+            self.cfg["dead"].pop(url, None)
+        else:
+            self.cfg["dead"][url] = time.time()
+        if sum(self._auto_counts) % 300 == 0:
+            self.view.viewport().update()
+
+    def _on_auto_scan_finished(self):
+        ok, dead = self._auto_counts
+        log.info("Teste automático terminou: %d no ar, %d fora do ar", ok, dead)
+        self.cfg["last_full_scan"] = time.time()
+        self.cfg.save()
+        if self.hide_dead_cb.isChecked():
+            self._select_category(self.category, from_nav=None)
+        else:
+            self._update_count()
+
     def _toggle_scan(self):
         if self.scanner.running:
             self.scanner.stop()
@@ -2209,7 +2294,10 @@ class MainWindow(QMainWindow):
         old_epg = (self.cfg["epg_enabled"], list(self.cfg["epg_urls"]))
         old_ai = (self.cfg["cap_model"], self.cfg["cap_source"], self.cfg["cap_translator"])
         old_voice = self.cfg["dub_voice"]
+        old_merge = self.cfg["merge_dupes"]
         dlg.exec()
+        if self.cfg["merge_dupes"] != old_merge:
+            self._select_category(self.category, from_nav=None)
         self._apply_caption_prefs()
         if self.captions and (self.cfg["cap_model"], self.cfg["cap_source"], self.cfg["cap_translator"]) != old_ai:
             self._stop_caption_worker()
@@ -2226,6 +2314,7 @@ class MainWindow(QMainWindow):
     # ================================================================ encerramento
     def closeEvent(self, e):
         self.scanner.stop()
+        self.auto_scanner.stop()
         if self.updater:
             self.updater.cancel()
         self.subs_timer.stop()

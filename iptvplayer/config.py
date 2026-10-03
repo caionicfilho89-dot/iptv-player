@@ -29,6 +29,7 @@ DEFAULTS = {
     "timeshift": True, "timeshift_minutes": 30,
     "schedule": [],
     "remote": False, "remote_key": "",
+    "auto_scan": True, "last_full_scan": 0, "merge_dupes": True,
 }
 
 

@@ -97,11 +97,13 @@ class Scanner(QObject):
     finished = pyqtSignal()
     MAX_ACTIVE = 12
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, max_active=None):
         super().__init__(parent)
         self.nam = QNetworkAccessManager(self)
         self.running = False
         self.replies = []
+        if max_active:
+            self.MAX_ACTIVE = max_active
 
     def start(self, channels):
         self.queue, self.total, self.done = list(channels), len(channels), 0
