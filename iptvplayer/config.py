@@ -24,7 +24,7 @@ DEFAULTS = {
     "check_updates": True, "last_update_check": 0, "latest_version": "", "update_url": "", "update_size": 0,
     "mosaic_size": 2,
     "alt_links": {}, "explore_pos": [],
-    "captions": False, "cap_model": "small", "cap_source": "auto", "cap_original": False, "cap_scale": 1.0,
+    "captions": False, "cap_model": "small", "cap_source": "auto", "cap_original": False, "cap_scale": 1.0, "cap_translator": "google",
     "dub_voice": "", "dub_duck": 0.25,
     "timeshift": True, "timeshift_minutes": 30,
 }

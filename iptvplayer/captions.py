@@ -222,6 +222,78 @@ def _dir_mb(path):
     return total / 1e6
 
 
+# ---------------------------------------------------------------- tradução sem internet (NLLB-200)
+TRANSLATORS = {"google": "Google Tradutor (internet)", "local": "No próprio PC, sem internet (NLLB)"}
+NLLB_REPO = "JustFrederik/nllb-200-distilled-600M-ct2-int8"
+NLLB_DIR = CACHE / "nllb"
+NLLB_MB = 620
+# códigos do Whisper -> códigos do NLLB (FLORES-200)
+NLLB_CODES = {
+    "en": "eng_Latn", "es": "spa_Latn", "fr": "fra_Latn", "it": "ita_Latn", "de": "deu_Latn", "ru": "rus_Cyrl",
+    "uk": "ukr_Cyrl", "ar": "arb_Arab", "tr": "tur_Latn", "el": "ell_Grek", "he": "heb_Hebr", "fa": "pes_Arab",
+    "hi": "hin_Deva", "ja": "jpn_Jpan", "ko": "kor_Hang", "zh": "zho_Hans", "id": "ind_Latn", "vi": "vie_Latn",
+    "th": "tha_Thai", "nl": "nld_Latn", "sv": "swe_Latn", "pl": "pol_Latn", "ro": "ron_Latn", "sq": "als_Latn",
+    "ca": "cat_Latn", "cs": "ces_Latn", "hu": "hun_Latn", "bg": "bul_Cyrl", "sr": "srp_Cyrl", "hr": "hrv_Latn",
+    "bs": "bos_Latn", "sk": "slk_Latn", "sl": "slv_Latn", "da": "dan_Latn", "no": "nob_Latn", "nn": "nno_Latn",
+    "fi": "fin_Latn", "et": "est_Latn", "lv": "lvs_Latn", "lt": "lit_Latn", "ta": "tam_Taml", "te": "tel_Telu",
+    "bn": "ben_Beng", "ur": "urd_Arab", "ms": "zsm_Latn", "tl": "tgl_Latn", "sw": "swh_Latn", "mk": "mkd_Cyrl",
+    "hy": "hye_Armn", "ka": "kat_Geor", "az": "azj_Latn", "kk": "kaz_Cyrl", "pa": "pan_Guru", "gu": "guj_Gujr",
+    "mr": "mar_Deva", "ne": "npi_Deva", "si": "sin_Sinh", "km": "khm_Khmr", "my": "mya_Mymr", "am": "amh_Ethi",
+    "so": "som_Latn", "ha": "hau_Latn", "yo": "yor_Latn", "af": "afr_Latn", "is": "isl_Latn", "ga": "gle_Latn",
+    "cy": "cym_Latn", "eu": "eus_Latn", "gl": "glg_Latn", "be": "bel_Cyrl", "pt": "por_Latn",
+}
+SENTENCES = re.compile(r"(?<=[.!?…。！？])\s+")
+
+
+def nllb_ready():
+    return (NLLB_DIR / "model.bin").exists() and (NLLB_DIR / "tokenizer.json").exists()
+
+
+class LocalTranslator:
+    """Tradutor NLLB-200 rodando no PC (CTranslate2): funciona sem internet."""
+
+    def __init__(self, device="cpu"):
+        import ctranslate2
+        from tokenizers import Tokenizer
+        self.tok = Tokenizer.from_file(str(NLLB_DIR / "tokenizer.json"))
+        compute = "int8_float16" if device == "cuda" else "int8"
+        self.tr = ctranslate2.Translator(str(NLLB_DIR), device=device, compute_type=compute,
+                                         intra_threads=max(2, min(4, (os.cpu_count() or 4) // 4)))
+
+    @staticmethod
+    def download(progress, cancelled):
+        from huggingface_hub import snapshot_download
+        result = {}
+
+        def dl():
+            try:
+                snapshot_download(NLLB_REPO, local_dir=str(NLLB_DIR))
+            except Exception as e:  # noqa: BLE001
+                result["error"] = e
+        t = threading.Thread(target=dl, daemon=True)
+        t.start()
+        while t.is_alive():
+            if cancelled():
+                raise RuntimeError("cancelado")
+            progress(_dir_mb(NLLB_DIR))
+            t.join(0.7)
+        if "error" in result:
+            raise result["error"]
+
+    def translate(self, text, src):
+        code = NLLB_CODES.get(src)
+        if not code:
+            return ""
+        # uma frase por vez: com várias juntas o NLLB às vezes pula alguma
+        parts = [p for p in SENTENCES.split(text) if p.strip()]
+        batch = [[code] + self.tok.encode(p, add_special_tokens=False).tokens + ["</s>"] for p in parts]
+        res = self.tr.translate_batch(batch, target_prefix=[["por_Latn"]] * len(batch), beam_size=4,
+                                      max_decoding_length=256)
+        out = [self.tok.decode([self.tok.token_to_id(t) for t in r.hypotheses[0][1:]], skip_special_tokens=True)
+               for r in res]
+        return re.sub(r"\s+([.,!?;:…])", r"", " ".join(o.strip() for o in out if o.strip()))
+
+
 class Segmenter:
     """Junta blocos de 100 ms de áudio em trechos de fala, cortando nas pausas."""
 
@@ -276,7 +348,7 @@ class CaptionWorker(QThread):
     failed = pyqtSignal(str)
     ready = pyqtSignal()
 
-    def __init__(self, model_name="small", source="auto", parent=None):
+    def __init__(self, model_name="small", source="auto", translator="google", parent=None):
         super().__init__(parent)
         self.model_name = model_name if model_name in MODELS else "small"
         self.source = source
@@ -292,6 +364,9 @@ class CaptionWorker(QThread):
         self._last = None             # (texto, momento, idioma) da última legenda, para juntar frases
         self.locked_lang = None
         self.device = "cpu"
+        self.translator = translator if translator in TRANSLATORS else "google"
+        self._local = None            # LocalTranslator, carregado só quando precisa
+        self._local_failed = False
         self.tap_mode = False         # True: o som vem direto do player (dublagem), não da caixa de som
         self._restart = threading.Event()
 
@@ -570,6 +645,27 @@ class CaptionWorker(QThread):
         else:
             self._mismatch = 0
 
+    def _translate_local(self, text, lang):
+        if self._local is None and not self._local_failed:
+            try:
+                if not nllb_ready():
+                    LocalTranslator.download(
+                        lambda mb: self.status.emit(f"Baixando o tradutor sem internet ({mb:.0f} de ~{NLLB_MB} MB)"
+                                                    " — só na primeira vez…"), self._stop.is_set)
+                    self.status.emit("")
+                self._local = LocalTranslator(self.device)
+                log.info("Tradução: NLLB no PC (%s)", self.device)
+            except Exception:  # noqa: BLE001
+                log.exception("Tradução sem internet indisponível")
+                self._local_failed = True
+        if not self._local:
+            return translate(text, lang)
+        try:
+            return self._local.translate(text, lang)
+        except Exception:  # noqa: BLE001
+            log.exception("Tradução sem internet falhou")
+            return ""
+
     def _translate_loop(self):
         while True:
             item = self._tr_queue.get()
@@ -580,7 +676,14 @@ class CaptionWorker(QThread):
                 continue  # o canal já mudou
             if replace is None and not self._tr_queue.empty():
                 continue  # prévia velha: já chegou coisa mais nova
-            translated = text if lang == TARGET else translate(text, lang)
+            if lang == TARGET:
+                translated = text
+            elif self.translator == "local":
+                translated = self._translate_local(text, lang)
+            else:
+                translated = translate(text, lang)
+                if not translated and nllb_ready():  # sem internet: usa o tradutor do PC, se já baixado
+                    translated = self._translate_local(text, lang)
             if gen != self._gen or self._stop.is_set():
                 continue
             if replace is None:

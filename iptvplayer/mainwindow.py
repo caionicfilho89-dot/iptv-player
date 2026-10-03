@@ -1842,7 +1842,7 @@ class MainWindow(QMainWindow):
         self.dubber.status.connect(lambda t: self._info(t, 8) if t else self.info_lbl.setText(""))
 
     def _start_caption_worker(self):
-        w = CaptionWorker(self.cfg["cap_model"], self.cfg["cap_source"])
+        w = CaptionWorker(self.cfg["cap_model"], self.cfg["cap_source"], self.cfg["cap_translator"])
         w.caption.connect(self._on_caption)
         w.partial.connect(lambda _o, t: self.cc_btn.isChecked() and self.subs.set_preview(t))
         w.status.connect(self._on_caption_status)
@@ -2006,11 +2006,11 @@ class MainWindow(QMainWindow):
         dlg.update_lists.connect(lambda: self.update_lists())
         dlg.reload_epg.connect(lambda: self._reload_epg(force=True))
         old_epg = (self.cfg["epg_enabled"], list(self.cfg["epg_urls"]))
-        old_ai = (self.cfg["cap_model"], self.cfg["cap_source"])
+        old_ai = (self.cfg["cap_model"], self.cfg["cap_source"], self.cfg["cap_translator"])
         old_voice = self.cfg["dub_voice"]
         dlg.exec()
         self._apply_caption_prefs()
-        if self.captions and (self.cfg["cap_model"], self.cfg["cap_source"]) != old_ai:
+        if self.captions and (self.cfg["cap_model"], self.cfg["cap_source"], self.cfg["cap_translator"]) != old_ai:
             self._stop_caption_worker()
             if self.cc_btn.isChecked() or self.dub_btn.isChecked():
                 self._start_caption_worker()

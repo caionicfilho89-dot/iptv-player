@@ -9,7 +9,10 @@ from PyQt6.QtWidgets import (
 )
 
 from . import APP_VERSION
-from .captions import CUDA_DOWNLOAD_MB, GPU_MODEL, MODELS, SOURCE_LANGS, cuda_ready, gpu_available
+from .captions import (
+    CUDA_DOWNLOAD_MB, GPU_MODEL, MODELS, NLLB_MB, SOURCE_LANGS, TRANSLATORS, cuda_ready, gpu_available,
+    nllb_ready,
+)
 from .config import DEFAULT_EPG_URLS
 from .dub import DEFAULT_VOICE, voices
 from .log import LOG_FILE
@@ -114,6 +117,15 @@ class SettingsDialog(QDialog):
             self.cap_scale.addItem(label, v)
         self.cap_scale.setCurrentIndex(max(0, self.cap_scale.findData(cfg["cap_scale"])))
         lay.addLayout(_row(QLabel("Qualidade da IA"), self.cap_model, QLabel("Idioma do canal"), self.cap_source))
+        self.cap_translator = QComboBox()
+        for key, label in TRANSLATORS.items():
+            if key == "local" and not nllb_ready():
+                label += f" · baixa {NLLB_MB} MB"
+            self.cap_translator.addItem(label, key)
+        self.cap_translator.setCurrentIndex(max(0, self.cap_translator.findData(cfg["cap_translator"])))
+        self.cap_translator.setToolTip("Com o Google, se a internet cair, o programa usa o tradutor do PC "
+                                       "(se ele já tiver sido baixado)")
+        lay.addLayout(_row(QLabel("Tradutor"), self.cap_translator))
         self.cap_original = QCheckBox("Mostrar também a frase original")
         self.cap_original.setChecked(cfg["cap_original"])
         lay.addLayout(_row(QLabel("Tamanho da legenda"), self.cap_scale, self.cap_original))
@@ -183,6 +195,7 @@ class SettingsDialog(QDialog):
         self.cfg["cap_source"] = self.cap_source.currentData()
         self.cfg["cap_scale"] = self.cap_scale.currentData()
         self.cfg["cap_original"] = self.cap_original.isChecked()
+        self.cfg["cap_translator"] = self.cap_translator.currentData()
         self.cfg["dub_voice"] = self.dub_voice.currentData()
         self.cfg["timeshift"] = self.ts_on.isChecked()
         self.cfg["timeshift_minutes"] = self.ts_minutes.currentData()
