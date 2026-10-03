@@ -35,7 +35,7 @@ from .updater import UpdateDownloader, can_self_update, run_installer, setup_ass
 from .theme import T, app_icon, apply_theme, build_style, icon
 from .vlcload import vlc
 from .widgets import (
-    ChannelModel, FullscreenOverlay, GridDelegate, ListDelegate, VideoFrame, make_btn, refresh_icons,
+    ChannelModel, FullscreenOverlay, GridDelegate, ListDelegate, SeekSlider, VideoFrame, make_btn, refresh_icons,
     set_btn_icon,
 )
 
@@ -288,6 +288,23 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(w)
         v.setContentsMargins(16, 10, 16, 12)
         v.setSpacing(8)
+
+        # barra de tempo do buffer (pausar e voltar a TV ao vivo): só aparece quando o canal tem buffer
+        self.seek_row = QWidget()
+        sr = QHBoxLayout(self.seek_row)
+        sr.setContentsMargins(0, 0, 0, 0)
+        self.seek_pos_lbl = QLabel("", objectName="muted")
+        self.seek = SeekSlider(Qt.Orientation.Horizontal)
+        self.seek.setToolTip("Arraste ou clique para ir a qualquer ponto do que foi guardado")
+        self.seek.sliderMoved.connect(self._seek_preview)
+        self.seek.sliderPressed.connect(lambda: self._seek_preview(self.seek.value()))
+        self.seek.sliderReleased.connect(self._seek_released)
+        self.seek_end_lbl = QLabel("", objectName="muted")
+        sr.addWidget(self.seek_pos_lbl)
+        sr.addWidget(self.seek, 1)
+        sr.addWidget(self.seek_end_lbl)
+        self.seek_row.hide()
+        v.addWidget(self.seek_row)
 
         top = QHBoxLayout()
         self.now_logo = QLabel()
@@ -986,6 +1003,34 @@ class MainWindow(QMainWindow):
         on = self._ts_active()
         for b in (self.back_btn, self.fwd_btn, self.live_btn):
             b.setEnabled(on)
+        self.seek_row.setVisible(on)
+
+    @staticmethod
+    def _fmt_behind(sec):
+        m, s = divmod(int(max(0, sec)), 60)
+        return f"-{m}:{s:02d}" if sec >= 1 else "ao vivo"
+
+    def _seek_update(self):
+        """Barra de tempo: do mais antigo guardado (esquerda) até o ao vivo (direita)."""
+        if not self._ts_active() or self.seek.isSliderDown():
+            return
+        start, _end = self.timeshift.span()
+        live = self._ts_live_point()
+        pos = self._paused_at if self._paused_at is not None else self._ts_pos()
+        self.seek.blockSignals(True)
+        self.seek.setRange(int(start), max(int(start) + 1, int(live)))
+        self.seek.setValue(int(min(max(pos, start), live)))
+        self.seek.blockSignals(False)
+        self.seek_pos_lbl.setText(self._fmt_behind(live - pos))
+        kept = live - start
+        self.seek_end_lbl.setText(f"{int(kept // 60)}:{int(kept % 60):02d} guardados")
+
+    def _seek_preview(self, value):
+        self.seek_pos_lbl.setText(self._fmt_behind(self.seek.maximum() - value))
+
+    def _seek_released(self):
+        if self._ts_active():
+            self._ts_open_at(float(self.seek.value()))
 
     def _ts_status(self):
         """Mostra "Ao vivo" ou quanto está atrás, e quanto o buffer já guardou."""
@@ -995,6 +1040,7 @@ class MainWindow(QMainWindow):
         self.live_btn.setToolTip(f"Ir para o ao vivo (Ctrl+End)\nGuardando os últimos "
                                  f"{self.cfg['timeshift_minutes']} min — já tem {int(kept // 60)} min "
                                  f"{int(kept % 60)} s")
+        self._seek_update()
         behind = self._ts_behind()
         if self._paused_at is not None:
             m, s = divmod(int(behind), 60)

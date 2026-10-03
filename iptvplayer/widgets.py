@@ -9,6 +9,24 @@ from .theme import T, VIDEO_TEXT, icon
 
 
 # ----------------------------------------------------------------------------- botões com ícone
+class SeekSlider(QSlider):
+    """Barra de tempo: clicar em qualquer ponto pula direto para ele (o QSlider pularia aos poucos)."""
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton and self.maximum() > self.minimum():
+            x = e.position().x() / max(1, self.width())
+            self.setValue(self.minimum() + round(x * (self.maximum() - self.minimum())))
+            self.setSliderDown(True)  # emite sliderPressed
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        super().mouseReleaseEvent(e)
+        if self.isSliderDown():
+            self.setSliderDown(False)  # emite sliderReleased
+
+
 def make_btn(icon_name=None, tip="", slot=None, kind="round", text="", checkable=False,
              icon_color="text", icon_size=None):
     b = QPushButton(text, objectName=kind)
