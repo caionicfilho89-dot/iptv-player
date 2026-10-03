@@ -289,11 +289,24 @@ class CaptionWorker(QThread):
         self._last = None             # (texto, momento, idioma) da última legenda, para juntar frases
         self.locked_lang = None
         self.device = "cpu"
+        self.tap_mode = False         # True: o som vem direto do player (dublagem), não da caixa de som
+        self._restart = threading.Event()
 
     # ---- chamados pela interface
     def set_active(self, on):
         (self._active.set if on else self._active.clear)()
         self._reset.set()
+
+    def use_tap(self, on):
+        """Liga/desliga a escuta direta do player (feed) no lugar da captura da caixa de som."""
+        if on != self.tap_mode:
+            self.tap_mode = on
+            self._restart.set()
+
+    def feed(self, block):
+        """Bloco de 100 ms, 16 kHz mono, vindo do player (chamado pela tarefa do som)."""
+        if self.tap_mode and self._active.is_set():
+            self._audio.put(block)
 
     def reset(self):
         """Canal novo: esquece o áudio acumulado e volta a detectar o idioma."""
@@ -397,30 +410,20 @@ class CaptionWorker(QThread):
         return target
 
     def _listen(self, model):
-        import numpy as np
-        _com_init()
-        import soundcard as sc
-
-        speaker = sc.default_speaker()
-        mic = sc.get_microphone(id=str(speaker.name), include_loopback=True)
-        log.info("Legendas: ouvindo o som de \"%s\"", speaker.name)
+        self._restart.clear()
+        self._drain()
         capture_stop = threading.Event()
-
-        def capture():
-            _com_init()
-            try:
-                with mic.recorder(samplerate=RATE, channels=1, blocksize=BLOCK) as rec:
-                    while not capture_stop.is_set():
-                        self._audio.put(rec.record(numframes=BLOCK)[:, 0].astype(np.float32))
-            except Exception as e:  # noqa: BLE001
-                self._audio.put(e)
-
-        th = threading.Thread(target=capture, daemon=True)
-        th.start()
+        th = None
+        if self.tap_mode:
+            log.info("Legendas: ouvindo o som direto do player")
+        else:
+            th = self._start_capture(capture_stop)
         self.status.emit("")
         seg = Segmenter()
         try:
             while self._active.is_set() and not self._stop.is_set():
+                if self._restart.is_set():
+                    break  # mudou de onde vem o som: recomeça a escuta
                 if self._reset.is_set():
                     self._reset.clear()
                     seg.clear()
@@ -443,8 +446,32 @@ class CaptionWorker(QThread):
                     self._process(model, audio)
         finally:
             capture_stop.set()
-            th.join(1.5)
+            if th:
+                th.join(1.5)
             self._drain()
+
+    def _start_capture(self, capture_stop):
+        """Captura o som que sai da caixa de som padrão (loopback do Windows)."""
+        import numpy as np
+        _com_init()
+        import soundcard as sc
+
+        speaker = sc.default_speaker()
+        mic = sc.get_microphone(id=str(speaker.name), include_loopback=True)
+        log.info("Legendas: ouvindo o som de \"%s\"", speaker.name)
+
+        def capture():
+            _com_init()
+            try:
+                with mic.recorder(samplerate=RATE, channels=1, blocksize=BLOCK) as rec:
+                    while not capture_stop.is_set():
+                        self._audio.put(rec.record(numframes=BLOCK)[:, 0].astype(np.float32))
+            except Exception as e:  # noqa: BLE001
+                self._audio.put(e)
+
+        th = threading.Thread(target=capture, daemon=True)
+        th.start()
+        return th
 
     def _forget(self):
         self._gen += 1

@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
 from . import APP_VERSION
 from .captions import CUDA_DOWNLOAD_MB, GPU_MODEL, MODELS, SOURCE_LANGS, cuda_ready, gpu_available
 from .config import DEFAULT_EPG_URLS
+from .dub import voices
 from .log import LOG_FILE
 from .theme import ACCENTS, T
 from .widgets import make_btn
@@ -116,6 +117,16 @@ class SettingsDialog(QDialog):
         self.cap_original = QCheckBox("Mostrar também a frase original")
         self.cap_original.setChecked(cfg["cap_original"])
         lay.addLayout(_row(QLabel("Tamanho da legenda"), self.cap_scale, self.cap_original))
+        self.dub_voice = QComboBox()
+        for name in voices() or ["Voz padrão do Windows"]:
+            self.dub_voice.addItem(name.replace("Microsoft ", "").split(" - ")[0], name)
+        self.dub_voice.setCurrentIndex(max(0, self.dub_voice.findData(cfg["dub_voice"])))
+        self.dub_duck = QComboBox()
+        for label, v in (("Bem baixo", 0.12), ("Baixo", 0.25), ("Médio", 0.45)):
+            self.dub_duck.addItem(label, v)
+        self.dub_duck.setCurrentIndex(max(0, self.dub_duck.findData(cfg["dub_duck"])))
+        lay.addLayout(_row(QLabel("Voz da dublagem (Ctrl+U)"), self.dub_voice,
+                           QLabel("Som original enquanto ela fala"), self.dub_duck))
 
         lay.addWidget(QLabel("Geral", objectName="h2"))
         self.check_upd = QCheckBox("Avisar quando houver uma nova versão do IPTV Player")
@@ -160,6 +171,8 @@ class SettingsDialog(QDialog):
         self.cfg["cap_source"] = self.cap_source.currentData()
         self.cfg["cap_scale"] = self.cap_scale.currentData()
         self.cfg["cap_original"] = self.cap_original.isChecked()
+        self.cfg["dub_voice"] = self.dub_voice.currentData()
+        self.cfg["dub_duck"] = self.dub_duck.currentData()
         self._save_epg_fields()
         self.cfg.save()
         super().accept()

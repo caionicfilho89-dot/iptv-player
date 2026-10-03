@@ -17,6 +17,8 @@ from PyQt6.QtWidgets import (
 
 from . import APP_NAME, APP_VERSION, REPO
 from . import sources as src
+from .audio import AudioEngine
+from .dub import Dubber
 from .captions import CaptionWorker, SubtitleOverlay, missing_deps, video_rect_global
 from .config import DEAD_TTL, Config
 from .discovery import MAX_ALT_TRIES, ExploredSet, LinkIndex, NewChannels, list_urls
@@ -119,6 +121,8 @@ class MainWindow(QMainWindow):
         self.overlay = FullscreenOverlay()
         self._wire_overlay()
         self.updater = None          # download da versão nova (atualização com um clique)
+        self.audio = AudioEngine()   # som tocado pelo programa enquanto a dublagem está ligada
+        self.dubber = None
         self.captions = None         # IA de legendas (carregada na primeira vez que é ligada)
         self.subs = SubtitleOverlay(self)
         self._apply_caption_prefs()
@@ -375,6 +379,9 @@ class MainWindow(QMainWindow):
         self.cc_btn = make_btn("cc", "Legendas traduzidas por IA (Ctrl+T)", kind="tool", checkable=True,
                                icon_size=18)
         self.cc_btn.toggled.connect(self._toggle_captions)
+        self.dub_btn = make_btn("dub", "Dublagem por IA: fala a tradução em português por cima do som "
+                                "original (Ctrl+U)", kind="tool", checkable=True, icon_size=18)
+        self.dub_btn.toggled.connect(self._toggle_dub)
         self.guide_btn = make_btn("guide", "Guia de programação (Ctrl+G)", self.open_guide, kind="tool", icon_size=18)
         self.snap_btn = make_btn("camera", "Tirar foto da tela (Ctrl+S)", self.snapshot, kind="tool", icon_size=18)
         self.rec_btn = make_btn("record", "Gravar canal (Ctrl+R)", self.toggle_record, kind="tool",
@@ -383,7 +390,7 @@ class MainWindow(QMainWindow):
         self.mosaic_btn = make_btn("mosaic", "Mosaico: vários canais ao mesmo tempo", self.open_mosaic,
                                    kind="tool", icon_size=18)
         self.sleep_btn = make_btn("timer", "Timer para desligar", self._sleep_menu, kind="tool", icon_size=18)
-        for b in (self.cc_btn, self.guide_btn, self.snap_btn, self.rec_btn, self.pip_btn, self.mosaic_btn, self.sleep_btn):
+        for b in (self.cc_btn, self.dub_btn, self.guide_btn, self.snap_btn, self.rec_btn, self.pip_btn, self.mosaic_btn, self.sleep_btn):
             auto.addWidget(b)
         self.sleep_lbl = QLabel("", objectName="muted")
         auto.addWidget(self.sleep_lbl)
@@ -441,6 +448,7 @@ class MainWindow(QMainWindow):
         sc("Ctrl+P", self.enter_pip)
         sc("Ctrl+L", self._toggle_view_mode)
         sc("Ctrl+T", self.cc_btn.toggle)
+        sc("Ctrl+U", self.dub_btn.toggle)
         sc("Ctrl+E", self.explore_btn.toggle)
 
     def _escape(self):
@@ -853,6 +861,8 @@ class MainWindow(QMainWindow):
         self.player.play()
         if self.captions:
             self.captions.reset()
+        if self.dubber:
+            self.dubber.reset()
         self.subs.clear()
         self.started_at = time.monotonic()
         self.confirmed = False
@@ -1094,6 +1104,7 @@ class MainWindow(QMainWindow):
     def _set_volume(self, v):
         self.cfg["volume"] = v
         self.player.audio_set_volume(v)
+        self.audio.volume = v / 100
         if v and self.player.audio_get_mute():
             self.player.audio_set_mute(False)
         for b in (self.mute_btn, self.overlay.mute_btn):
@@ -1106,8 +1117,9 @@ class MainWindow(QMainWindow):
                 s.blockSignals(False)
 
     def toggle_mute(self):
-        m = not self.player.audio_get_mute()
+        m = not (self.audio.muted if self.audio.attached else self.player.audio_get_mute() == 1)
         self.player.audio_set_mute(m)
+        self.audio.muted = m
         for b in (self.mute_btn, self.overlay.mute_btn):
             set_btn_icon(b, "mute" if m else "volume")
         self._caption_sound_notice(m)
@@ -1515,6 +1527,7 @@ class MainWindow(QMainWindow):
         if self.zap_btn.isChecked():
             self.zap_btn.setChecked(False)
         self.explore_btn.setChecked(False)
+        self.dub_btn.setChecked(False)
         self._mosaic_prev = self.current
         self.player.stop()
         self.current = None
@@ -1559,10 +1572,49 @@ class MainWindow(QMainWindow):
             self._place_subs()
             self._caption_sound_notice()
         else:
-            if self.captions:
+            if self.captions and not self.dub_btn.isChecked():
                 self.captions.set_active(False)  # a IA continua carregada para religar na hora
             self.subs_timer.stop()
             self.subs.clear()
+
+    # ================================================================ dublagem por IA
+    def _toggle_dub(self, on):
+        if on and missing_deps():
+            self.dub_btn.setChecked(False)
+            QMessageBox.information(
+                self, "Dublagem por IA",
+                "Esta versão do IPTV Player não inclui a IA de legendas, que a dublagem usa.\n\n"
+                f"Para usar pelo código-fonte, instale:  pip install {' '.join(missing_deps())}")
+            return
+        if on == self.audio.attached:
+            return
+        log.info("Dublagem %s", "ligada" if on else "desligada")
+        # o som muda de caminho (VLC <-> programa): o canal recomeça para valer
+        self.player.stop()
+        if on:
+            self.audio.volume = self.vol.value() / 100
+            self.audio.muted = False
+            self.audio.duck_level = self.cfg["dub_duck"]
+            self.audio.ai_sink = lambda block: self.captions and self.captions.feed(block)
+            self.audio.attach(self.player)
+            self.dubber = Dubber(self.audio, self.cfg["dub_voice"], self)
+            if not self.captions:
+                self._start_caption_worker()
+            self.captions.use_tap(True)
+            self.captions.set_active(True)
+            if not self.cc_btn.isChecked():
+                self._info("Dublagem ligada: a IA vai falar a tradução em português. "
+                           "Ligue também a legenda (Ctrl+T) se quiser ler.", 8)
+        else:
+            if self.dubber:
+                self.dubber.stop()
+                self.dubber = None
+            self.audio.detach()
+            if self.captions:
+                self.captions.use_tap(False)
+                self.captions.set_active(self.cc_btn.isChecked())
+            self.player.audio_set_volume(self.vol.value())
+        self._replay()
 
     def _start_caption_worker(self):
         w = CaptionWorker(self.cfg["cap_model"], self.cfg["cap_source"])
@@ -1571,8 +1623,9 @@ class MainWindow(QMainWindow):
         w.failed.connect(self._on_caption_failed)
         w.finished.connect(w.deleteLater)
         self.captions = w
+        w.use_tap(self.audio.attached)
         w.start()
-        w.set_active(self.cc_btn.isChecked())
+        w.set_active(self.cc_btn.isChecked() or self.dub_btn.isChecked())
 
     def _stop_caption_worker(self, wait=False):
         w, self.captions = self.captions, None
@@ -1583,9 +1636,11 @@ class MainWindow(QMainWindow):
             if wait:
                 w.wait(4000)
 
-    def _on_caption(self, original, translated, _lang, replace):
+    def _on_caption(self, original, translated, lang, replace):
         if self.cc_btn.isChecked():
             self.subs.add(translated or original, original, replace)
+        if self.dubber and translated:
+            self.dubber.on_caption(translated, lang, replace)
 
     def _on_caption_status(self, text):
         if self.cc_btn.isChecked():
@@ -1593,6 +1648,7 @@ class MainWindow(QMainWindow):
 
     def _on_caption_failed(self, msg):
         log.error("Legendas: %s", msg)
+        self.dub_btn.setChecked(False)
         self._stop_caption_worker()
         self.cc_btn.setChecked(False)
         self._info(f"<span style='color:{T['bad']}'>{msg}</span>", 12)
@@ -1600,6 +1656,8 @@ class MainWindow(QMainWindow):
     def _caption_sound_notice(self, muted=None):
         if not self.cc_btn.isChecked():
             return
+        if self.audio.attached:  # com a dublagem a IA ouve o player direto: o volume não importa
+            return self.subs.set_notice("") if self.subs.notice.startswith("Som desligado") else None
         if muted is None:
             muted = self.player.audio_get_mute() == 1
         if muted or self.vol.value() == 0:
@@ -1723,12 +1781,17 @@ class MainWindow(QMainWindow):
         dlg.reload_epg.connect(lambda: self._reload_epg(force=True))
         old_epg = (self.cfg["epg_enabled"], list(self.cfg["epg_urls"]))
         old_ai = (self.cfg["cap_model"], self.cfg["cap_source"])
+        old_voice = self.cfg["dub_voice"]
         dlg.exec()
         self._apply_caption_prefs()
         if self.captions and (self.cfg["cap_model"], self.cfg["cap_source"]) != old_ai:
             self._stop_caption_worker()
-            if self.cc_btn.isChecked():
+            if self.cc_btn.isChecked() or self.dub_btn.isChecked():
                 self._start_caption_worker()
+        self.audio.duck_level = self.cfg["dub_duck"]
+        if self.dubber and self.cfg["dub_voice"] != old_voice:
+            self.dubber.stop()
+            self.dubber = Dubber(self.audio, self.cfg["dub_voice"], self)
         self.apply_theme(self.cfg["theme"], self.cfg["accent"])  # desfaz a prévia se não salvou
         if (self.cfg["epg_enabled"], self.cfg["epg_urls"]) != old_epg:
             self._reload_epg()
@@ -1750,6 +1813,9 @@ class MainWindow(QMainWindow):
             self.pip.close()
         self.overlay.close()
         self.player.stop()
+        if self.dubber:
+            self.dubber.stop()
+        self.audio.detach()
         if self.fullscreen:
             self.showNormal()
         self.explored.save()

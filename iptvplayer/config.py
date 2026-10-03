@@ -25,6 +25,7 @@ DEFAULTS = {
     "mosaic_size": 2,
     "alt_links": {}, "explore_pos": [],
     "captions": False, "cap_model": "small", "cap_source": "auto", "cap_original": False, "cap_scale": 1.0,
+    "dub_voice": "", "dub_duck": 0.25,
 }
 
 
