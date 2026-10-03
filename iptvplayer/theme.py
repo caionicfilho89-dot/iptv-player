@@ -184,6 +184,7 @@ ICONS = {
     "back": '<path d="M4 12a8 8 0 1 0 2.34-5.66"/><path d="M4 4v5h5"/><path d="M10 10.5h2.5v3H10M14.5 10.5v3"/>',
     "forward": '<path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/><path d="M9.5 10.5H12v3H9.5M14 10.5v3"/>',
     "live": '<circle cx="12" cy="12" r="2.6" fill="CUR"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M5 5a10 10 0 0 0 0 14M19 5a10 10 0 0 1 0 14"/>',
+    "phone": '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/>',
     "dub": '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/>',
     "cc": '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M10.6 10.3a2.4 2.4 0 1 0 0 3.4"/>'
           '<path d="M17.1 10.3a2.4 2.4 0 1 0 0 3.4"/>',

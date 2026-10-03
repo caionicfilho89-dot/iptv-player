@@ -28,6 +28,7 @@ DEFAULTS = {
     "dub_voice": "", "dub_duck": 0.25,
     "timeshift": True, "timeshift_minutes": 30,
     "schedule": [],
+    "remote": False, "remote_key": "",
 }
 
 

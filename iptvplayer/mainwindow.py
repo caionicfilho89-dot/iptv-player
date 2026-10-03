@@ -8,7 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRect, QSize, Qt, QTimer, QUrl
-from PyQt6.QtGui import QColor, QCursor, QDesktopServices, QFont, QGuiApplication, QKeySequence, QShortcut
+from PyQt6.QtGui import QColor, QCursor, QDesktopServices, QFont, QGuiApplication, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply
 from PyQt6.QtWidgets import (
     QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit, QListView,
@@ -32,6 +32,7 @@ from .net import ListDownloader, LogoLoader, Scanner, make_request
 from .pip import PipWindow
 from .recorder import Recorder, clip_path, snapshot_path
 from .timeshift import LIVE_DELAY_OPT, START_WAIT_MS, Timeshift, supports as timeshift_supports
+from .remote import RemoteServer, qr_pixmap
 from .updater import UpdateDownloader, can_self_update, run_installer, setup_asset
 from .theme import T, app_icon, apply_theme, build_style, icon
 from .vlcload import vlc
@@ -130,6 +131,11 @@ class MainWindow(QMainWindow):
         self.timeshift.ready.connect(self._ts_ready)
         self.timeshift.failed.connect(self._ts_failed)
         self.timeshift.exported.connect(self._clip_saved)
+        self.remote = RemoteServer(self.cfg["remote_key"], self)
+        self.cfg["remote_key"] = self.remote.key  # a mesma chave sempre: o QR lido continua valendo
+        self.remote.command.connect(self._remote_cmd)
+        if self.cfg["remote"]:
+            self.remote.start()
         self._ts_sid = None          # sessão do buffer do canal atual (None = tocando direto)
         self._ts_origin = 0.0        # início (s) do pedaço em que a mídia atual do VLC começou
         self._paused_at = None       # ponto (ms) em que a pausa com buffer começou
@@ -198,7 +204,8 @@ class MainWindow(QMainWindow):
                                       icon_size=16)
         self.update_banner.hide()
         sl.addWidget(self.update_banner)
-        for name, text, slot in (("plus", "Adicionar lista", self.add_list),
+        for name, text, slot in (("phone", "Controle pelo celular", self.open_remote),
+                                 ("plus", "Adicionar lista", self.add_list),
                                  ("refresh", "Atualizar canais", lambda: self.update_lists()),
                                  ("settings", "Configurações", self.open_settings)):
             b = make_btn(name, "", slot, kind="flat", text="  " + text, icon_color="muted", icon_size=17)
@@ -1493,9 +1500,103 @@ class MainWindow(QMainWindow):
                                       f" · {self.recorder.ch.name} · {mb:.0f} MB")
         if int(now) % 5 == 0:
             self._check_schedule(now)
+        if self.remote.running:
+            self._remote_state()
         if int(now) % 30 == 0:
             self._update_now_info()
             self.view.viewport().update()
+
+    # ================================================================ controle pelo celular
+    def open_remote(self):
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Controle pelo celular")
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(20, 16, 20, 16)
+        on = QCheckBox("Ligar o controle pelo celular")
+        on.setChecked(self.remote.running)
+        qr = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
+        url = QLabel(alignment=Qt.AlignmentFlag.AlignCenter, objectName="muted")
+        url.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        tip = QLabel("Aponte a câmera do celular para o código (o celular precisa estar no mesmo Wi-Fi deste PC). "
+                     "Se o Windows perguntar sobre o firewall, permita em <b>redes privadas</b>. Usa VPN (Surfshark, "
+                     "NordVPN…)? Ative nela a opção de <b>permitir acesso à rede local</b>.",
+                     wordWrap=True, objectName="muted")
+
+        def refresh():
+            if self.remote.running:
+                qr.setPixmap(qr_pixmap(self.remote.url(), 260))
+                url.setText(self.remote.url())
+            else:
+                qr.setPixmap(QPixmap())
+                qr.setText("Desligado")
+                url.setText("")
+
+        def toggle(checked):
+            ok = self.remote.start() if checked else (self.remote.stop() or True)
+            if checked and not ok:
+                on.setChecked(False)
+                self._info(f"<span style='color:{T['bad']}'>Não foi possível ligar: a porta já está em uso.</span>")
+            self.cfg["remote"] = self.remote.running
+            refresh()
+
+        def new_key():
+            import secrets
+            self.remote.key = self.cfg["remote_key"] = secrets.token_urlsafe(6)
+            refresh()
+        on.toggled.connect(toggle)
+        regen = make_btn(None, "O QR antigo para de funcionar (útil se alguém de fora o tiver lido)",
+                         new_key, kind="", text="Gerar novo código")
+        for w in (on, qr, url, tip, regen):
+            v.addWidget(w)
+        refresh()
+        dlg.exec()
+
+    def _remote_state(self):
+        st = self.player.get_state()
+        cats = [(src.FAV_KEY, "Favoritos"), (src.RECENT_KEY, "Recentes")]
+        cats += [(k, label) for k, label, _ic in src.builtin_entries()]
+        cats += [(src.custom_key(s), s["name"]) for s in self.cfg["custom_sources"]]
+        self.remote.state = {
+            "name": self.current.name if self.current else "",
+            "url": self.current.url if self.current else "",
+            "status": self._status[0],
+            "paused": st == vlc.State.Paused,
+            "muted": self.audio.muted if self.audio.attached else self.player.audio_get_mute() == 1,
+            "volume": self.vol.value(),
+            "cc": self.cc_btn.isChecked(),
+            "dub": self.dub_btn.isChecked(),
+            "cat_key": self.category,
+            "cats": cats,
+            "channels": [{"name": c.name, "url": c.url, "num": self.numbers.get(c.url, "")}
+                         for c in self.visible[:800]],
+        }
+
+    def _remote_cmd(self, cmd, arg):
+        log.info("Celular: %s %s", cmd, arg)
+        if cmd in ("prev", "next"):
+            self.step(-1 if cmd == "prev" else +1)
+        elif cmd == "pause":
+            self.toggle_pause()
+        elif cmd in ("back", "fwd"):
+            self.seek_relative(-30 if cmd == "back" else 30)
+        elif cmd == "live":
+            self.go_live()
+        elif cmd == "mute":
+            self.toggle_mute()
+        elif cmd == "vol" and arg.isdigit():
+            self.vol.setValue(int(arg))
+        elif cmd == "cc":
+            self.cc_btn.toggle()
+        elif cmd == "dub":
+            self.dub_btn.toggle()
+        elif cmd == "fullscreen":
+            self.toggle_fullscreen()
+        elif cmd == "play" and arg.isdigit() and int(arg) < len(self.visible):
+            self.play(self.visible[int(arg)])
+        elif cmd == "cat" and arg:
+            self._select_category(arg)
+        self._remote_state()
 
     # ================================================================ lembretes e gravações agendadas
     REMIND_BEFORE = 60           # aviso 1 min antes
@@ -2140,6 +2241,7 @@ class MainWindow(QMainWindow):
         self.overlay.close()
         self.player.stop()
         self.timeshift.shutdown()
+        self.remote.stop()
         if self.dubber:
             self.dubber.stop()
         self.audio.detach()
