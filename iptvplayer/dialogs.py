@@ -1,14 +1,16 @@
 """Diálogos: configurações, adicionar lista e guia de programação."""
+import threading
 import time
+import urllib.parse
 
-from PyQt6.QtCore import Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices
 from PyQt6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QVBoxLayout,
+    QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from . import APP_VERSION
+from . import APP_VERSION, xtream
 from .captions import (
     CUDA_DOWNLOAD_MB, GPU_MODEL, LLM_MB, MODELS, NLLB_MB, SOURCE_LANGS, TRANSLATORS, cuda_ready, gpu_available,
     llm_ready, nllb_ready,
@@ -220,35 +222,72 @@ class SettingsDialog(QDialog):
 
 
 class AddListDialog(QDialog):
+    """Lista por link/arquivo M3U ou por login Xtream Codes (servidor, usuário e senha)."""
+
     def __init__(self, parent=None, name="", url=""):
         super().__init__(parent)
         self.setWindowTitle("Adicionar lista")
         self.setMinimumWidth(520)
+        self._result_url = ""
+        self._login = None  # tarefa conferindo a conta Xtream: [resultado ou None]
         lay = QVBoxLayout(self)
         lay.setContentsMargins(22, 16, 22, 18)
         lay.setSpacing(8)
         lay.addWidget(QLabel("Adicionar lista de canais", objectName="h2"))
-        lay.addWidget(QLabel("Cole o link de uma lista M3U (por exemplo, a que sua operadora de IPTV forneceu) "
-                             "ou escolha um arquivo .m3u do computador.", objectName="muted", wordWrap=True))
         self.name = QLineEdit(name, placeholderText="Nome (ex.: Minha operadora)")
         lay.addWidget(self.name)
-        self.url = QLineEdit(url, placeholderText="https://…/lista.m3u   ou   C:\\…\\lista.m3u")
+        self.tabs = QTabWidget()
+        lay.addWidget(self.tabs)
+
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(0, 8, 0, 0)
+        v.addWidget(QLabel("Cole o link de uma lista M3U (por exemplo, a que sua operadora de IPTV forneceu) "
+                           "ou escolha um arquivo .m3u do computador.", objectName="muted", wordWrap=True))
+        self.url = QLineEdit(placeholderText="https://…/lista.m3u   ou   C:\\…\\lista.m3u")
         browse = make_btn("folder", "Escolher arquivo", self._browse, kind="tool", icon_size=18)
         h = QHBoxLayout()
         h.addWidget(self.url, 1)
         h.addWidget(browse)
-        lay.addLayout(h)
-        self.err = QLabel("", objectName="muted")
+        v.addLayout(h)
+        v.addStretch(1)
+        self.tabs.addTab(page, "Link ou arquivo")
+
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(0, 8, 0, 0)
+        v.addWidget(QLabel("Se a operadora passou <b>servidor, usuário e senha</b> (Xtream Codes), preencha aqui. "
+                           "Os canais e o guia de programação vêm direto do servidor.", objectName="muted",
+                           wordWrap=True))
+        self.server = QLineEdit(placeholderText="Servidor (ex.: http://servidor.com:8080)")
+        self.user = QLineEdit(placeholderText="Usuário")
+        self.password = QLineEdit(placeholderText="Senha", echoMode=QLineEdit.EchoMode.Password)
+        for w in (self.server, self.user, self.password):
+            v.addWidget(w)
+            w.returnPressed.connect(self._ok)
+        self.tabs.addTab(page, "Login (Xtream Codes)")
+
+        account = xtream.parse_api_url(url) if url else None
+        if account:
+            self.server.setText(account[0])
+            self.user.setText(account[1])
+            self.password.setText(account[2])
+            self.tabs.setCurrentIndex(1)
+        else:
+            self.url.setText(url)
+
+        self.err = QLabel("", objectName="muted", wordWrap=True)
         lay.addWidget(self.err)
-        ok = QPushButton("Adicionar", objectName="primary")
-        ok.clicked.connect(self._ok)
+        self.ok_btn = QPushButton("Adicionar", objectName="primary")
+        self.ok_btn.clicked.connect(self._ok)
         cancel = QPushButton("Cancelar")
         cancel.clicked.connect(self.reject)
         row = QHBoxLayout()
         row.addStretch(1)
         row.addWidget(cancel)
-        row.addWidget(ok)
+        row.addWidget(self.ok_btn)
         lay.addLayout(row)
+        self._poll = QTimer(self, interval=150, timeout=self._check_login)
 
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(self, "Escolher lista", "", "Listas M3U (*.m3u *.m3u8);;Todos (*.*)")
@@ -259,13 +298,53 @@ class AddListDialog(QDialog):
                 self.name.setText(os.path.splitext(os.path.basename(path))[0])
 
     def _ok(self):
-        if not self.url.text().strip():
-            self.err.setText("Informe um link ou arquivo.")
+        if self.tabs.currentIndex() == 0:
+            if not self.url.text().strip():
+                self.err.setText("Informe um link ou arquivo.")
+                return
+            self._result_url = self.url.text().strip()
+            return self.accept()
+        if self._login is not None:
             return
+        server, user, password = self.server.text().strip(), self.user.text().strip(), self.password.text()
+        if not (server and user and password):
+            self.err.setText("Preencha servidor, usuário e senha.")
+            return
+        url = xtream.api_url(server, user, password)
+        self.err.setText("Conferindo a conta…")
+        self.ok_btn.setEnabled(False)
+        box = self._login = []
+
+        def work():
+            try:
+                box.append((url, xtream.describe(xtream.login(url)), None))
+            except xtream.XtreamError as e:
+                box.append((url, None, str(e)))
+        threading.Thread(target=work, daemon=True, name="xtream-login").start()
+        self._poll.start()
+
+    def _check_login(self):
+        if not self._login:
+            return
+        self._poll.stop()
+        url, info, error = self._login[0]
+        self._login = None
+        self.ok_btn.setEnabled(True)
+        if error:
+            self.err.setText(error)
+            return
+        self._result_url = url
+        if not self.name.text().strip():
+            self.name.setText(urllib.parse.urlsplit(url).hostname or "Minha operadora")
+        self.err.setText(info)
         self.accept()
 
+    def account_info(self):
+        """Resumo da conta Xtream conferida (validade, telas), ou ""."""
+        return self.err.text() if xtream.is_api_url(self._result_url) else ""
+
     def values(self):
-        return self.name.text().strip(), self.url.text().strip()
+        return self.name.text().strip(), self._result_url
 
 
 def pin_hash(pin):

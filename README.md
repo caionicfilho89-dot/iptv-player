@@ -27,6 +27,8 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
   automaticamente** a partir do [iptv-org](https://github.com/iptv-org/iptv)
 - **Mundo (Free-TV)**: mais ~1.300 canais abertos do mundo todo, da lista [Free-TV](https://github.com/Free-TV/IPTV)
 - **Adicione suas próprias listas** por link (ex.: a da sua operadora de IPTV) ou arquivo `.m3u`
+- **Login da operadora (Xtream Codes)** 🆕: servidor, usuário e senha — canais por categoria e guia de programação
+  vêm direto do servidor, e o programa mostra a validade da conta
 - **Guia de programação (EPG)**: o que está passando agora e a seguir, com barra de progresso
 - Busca, filtro por grupo, favoritos ⭐ e recentes
 - **Listas atualizadas todo dia**, com os canais que chegaram marcados como **NOVO** e reunidos na categoria **Novos**
@@ -50,6 +52,8 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
   passar** (último 1, 5, 10 ou 30 minutos) 🆕 — também nos canais com áudio separado
 - **Dublagem por IA**: ouça a tradução em português, com o som original mais baixo por baixo (botão do
   microfone ou `Ctrl+U`) — 🆕 vozes **naturais** (Dora e Alex), além das vozes do Windows
+- **Áudio e legenda do canal** 🆕: escolha outro idioma de áudio ou a legenda que o próprio canal transmite
+  (botão do fone ou `Ctrl+Shift+A`); a escolha é lembrada para cada canal
 - **Lembretes e gravação agendada** 🆕: no guia, escolha um programa e peça para lembrar (aviso do Windows) ou
   gravar sozinho do começo ao fim
 - **Controle pelo celular** 🆕: aponte a câmera para o QR code e troque de canal, pause, volte e ajuste o volume
@@ -92,6 +96,7 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 | `Ctrl+L` | Alternar lista / grade |
 | `Ctrl+T` | Legendas traduzidas por IA |
 | `Ctrl+U` | Dublagem por IA |
+| `Ctrl+Shift+A` | Trocar o áudio do canal |
 | `Ctrl+←` / `Ctrl+→` | Voltar / avançar 30 segundos |
 | `Ctrl+End` | Voltar para o ao vivo |
 

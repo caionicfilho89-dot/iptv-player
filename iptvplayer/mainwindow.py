@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 
 from . import APP_NAME, APP_VERSION, REPO
 from . import sources as src
+from . import xtream
 from .audio import AudioEngine
 from .dub import Dubber
 from .captions import CaptionWorker, SubtitleOverlay, missing_deps, video_rect_global
@@ -777,6 +778,8 @@ class MainWindow(QMainWindow):
 
     def _on_list_done(self, key, ok):
         if not ok:
+            if key == self.category and not self.all_channels:
+                self.count_lbl.setText("Não foi possível baixar a lista (veja o link, ou usuário e senha)")
             return
         old = self.downloader.old_urls.pop(key, None)
         if old is None and not key.startswith(src.CUSTOM_PREFIX):
@@ -828,6 +831,8 @@ class MainWindow(QMainWindow):
             self.cfg.save()
             self._build_nav()
             self._select_category(src.custom_key(s))
+            if dlg.account_info():
+                self._info(f"{s['name']}: {dlg.account_info()}", 10)
 
     def edit_list(self, key):
         s = next((x for x in self.cfg["custom_sources"] if src.custom_key(x) == key), None)
@@ -930,7 +935,7 @@ class MainWindow(QMainWindow):
             return  # clique duplo não reinicia o canal
         if self.current and self.session_status.get(self.current.url) == "loading":
             self.session_status.pop(self.current.url)
-        log.info("Tocando: %s — %s", ch.name, (stream[0] if stream else ch.url))
+        log.info("Tocando: %s — %s", ch.name, xtream.redact(stream[0] if stream else ch.url))
         if not auto:
             self.fail_streak = 0
         self.current = ch
@@ -2023,7 +2028,9 @@ class MainWindow(QMainWindow):
         if not resuming and time.time() - self.cfg["last_full_scan"] < AUTO_SCAN_EVERY:
             return
         seen, targets = set(), []
-        keys = [k for k, *_ in src.builtin_entries()] + [src.custom_key(s) for s in self.cfg["custom_sources"]]
+        # contas Xtream ficam de fora: testar milhares de canais de uma conta paga pode bloqueá-la
+        keys = [k for k, *_ in src.builtin_entries()] + [src.custom_key(s) for s in self.cfg["custom_sources"]
+                                                         if not xtream.is_api_url(s["url"])]
         for key in keys:
             path = src.file_for(key, self.cfg["custom_sources"])
             if not path:

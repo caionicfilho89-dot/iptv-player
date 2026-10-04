@@ -11,6 +11,8 @@ novos que ainda não têm assinatura digital.
 
 RECURSOS
 - Listas atualizadas automaticamente (iptv-org) e suas próprias listas por link ou arquivo
+- Login da operadora (Xtream Codes): servidor, usuário e senha
+- Escolha o áudio e a legenda do canal (botão do fone ou Ctrl+Shift+A)
 - Guia de programação: o que está passando agora e a seguir
 - Pular canais offline e zapping automático (também só pelos favoritos)
 - Explorar: percorre sozinho todos os canais de todas as listas, sem repetir os já vistos
@@ -28,7 +30,7 @@ ATALHOS
 PgUp / PgDn ......... canal anterior / próximo
 F11 / duplo clique .. tela cheia (Esc para sair)
 Ctrl+F busca · Ctrl+D favorito · Ctrl+M mudo · Ctrl+Z zapping · Ctrl+E explorar
-Ctrl+G guia · Ctrl+S foto · Ctrl+R gravar · Ctrl+P janela flutuante · Ctrl+L lista/grade · Ctrl+T legendas
+Ctrl+G guia · Ctrl+S foto · Ctrl+R gravar · Ctrl+P janela flutuante · Ctrl+L lista/grade · Ctrl+T legendas · Ctrl+Shift+A áudio
 
 Fotos vão para Imagens\IPTV Player e gravações para Vídeos\IPTV Player.
 

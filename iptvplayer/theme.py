@@ -112,6 +112,10 @@ QMenu::item:selected {{ background: {t['accent']}; color: white; }}
 QMenu::separator {{ height: 1px; background: {t['border']}; margin: 4px 6px; }}
 QToolTip {{ background: {t['surface2']}; color: {t['text']}; border: 1px solid {t['border']}; padding: 4px; }}
 QTabWidget::pane {{ border: none; }}
+QTabBar::tab {{ background: transparent; color: {t['muted']}; border: none; border-bottom: 2px solid {t['border']};
+    padding: 7px 14px; margin-right: 2px; }}
+QTabBar::tab:hover {{ color: {t['text']}; }}
+QTabBar::tab:selected {{ color: {t['strong']}; border-bottom: 2px solid {t['accent']}; font-weight: 600; }}
 """
 
 

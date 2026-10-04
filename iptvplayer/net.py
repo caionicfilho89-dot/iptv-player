@@ -1,11 +1,14 @@
 """Rede: logos, teste de canais e download de listas."""
 import hashlib
+import threading
 
 from PyQt6.QtCore import QObject, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
+from . import xtream
 from .discovery import list_urls
+from .log import log
 from .paths import LOGO_CACHE
 
 USER_AGENT = b"VLC/3.0.21 LibVLC/3.0.21"
@@ -159,6 +162,7 @@ class ListDownloader(QObject):
     one_done = pyqtSignal(str, bool)       # chave, sucesso
     progress = pyqtSignal(int, int)
     finished = pyqtSignal(int, int)        # sucessos, falhas
+    _built = pyqtSignal(str, object, bytes)  # lista Xtream montada numa tarefa: chave, destino, dados
     MAX_ACTIVE = 4
 
     def __init__(self, parent=None):
@@ -166,6 +170,7 @@ class ListDownloader(QObject):
         self.nam = QNetworkAccessManager(self)
         self.running = False
         self.old_urls = {}                 # chave -> links da versão anterior (para achar canais novos)
+        self._built.connect(self._store)
 
     def start(self, jobs):
         """jobs: lista de (chave, url, caminho_destino)."""
@@ -179,12 +184,27 @@ class ListDownloader(QObject):
         while self.active < self.MAX_ACTIVE and self.queue:
             key, url, dest = self.queue.pop(0)
             self.active += 1
+            if xtream.is_api_url(url):
+                threading.Thread(target=self._build_xtream, args=(key, url, dest), daemon=True,
+                                 name="xtream").start()
+                continue
             reply = self.nam.get(make_request(url, timeout=90000, user_agent=b"IPTV-Player"))
             reply.finished.connect(lambda r=reply, k=key, d=dest: self._done(r, k, d))
+
+    def _build_xtream(self, key, url, dest):
+        try:
+            data = xtream.build_m3u(url)
+        except xtream.XtreamError as e:
+            log.warning("Xtream: %s (%s)", e, xtream.redact(url))
+            data = b""
+        self._built.emit(key, dest, data)
 
     def _done(self, reply, key, dest):
         data = bytes(reply.readAll()) if reply.error() == QNetworkReply.NetworkError.NoError else b""
         reply.deleteLater()
+        self._store(key, dest, data)
+
+    def _store(self, key, dest, data):
         good = b"#EXTINF" in data[:200000]
         if good:
             try:
