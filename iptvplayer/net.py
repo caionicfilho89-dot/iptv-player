@@ -101,6 +101,7 @@ class Scanner(QObject):
         super().__init__(parent)
         self.nam = QNetworkAccessManager(self)
         self.running = False
+        self.cancelled = False  # parado com stop(): finished é emitido, mas a rodada não terminou
         self.replies = []
         if max_active:
             self.MAX_ACTIVE = max_active
@@ -108,9 +109,12 @@ class Scanner(QObject):
     def start(self, channels):
         self.queue, self.total, self.done = list(channels), len(channels), 0
         self.active, self.decided, self.running = 0, set(), True
+        self.cancelled = False
         self._pump()
 
     def stop(self):
+        if self.running:
+            self.cancelled = True
         self.running = False
         self.queue = []
         for r in list(self.replies):

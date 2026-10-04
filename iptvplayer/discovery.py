@@ -9,8 +9,10 @@ from .paths import CACHE
 
 NEW_FILE = CACHE / "novos.json"
 SEEN_FILE = CACHE / "explorados.txt"
+SCAN_FILE = CACHE / "teste_automatico.txt"
 NEW_TTL = 3 * 86400      # canal fica marcado como NOVO por 3 dias
 MAX_ALT_TRIES = 4        # links alternativos testados antes de desistir do canal
+SCAN_RESUME_MAX = 86400  # rodada do teste automático interrompida: continua se tiver começado há menos de 1 dia
 
 
 def list_urls(path):
@@ -144,6 +146,54 @@ class ExploredSet:
             return
         try:
             SEEN_FILE.write_text("\n".join(self.urls), encoding="utf-8")
+            self._dirty = 0
+        except OSError:
+            pass
+
+
+class ScanProgress:
+    """Canais já testados na rodada atual do teste automático, para continuar de onde parou
+    quando o programa é fechado no meio (a rodada inteira leva horas)."""
+
+    def __init__(self):
+        self.started, self.urls, self._dirty = 0.0, set(), 0
+        try:
+            first, *rest = SCAN_FILE.read_text(encoding="utf-8").split("\n")
+            started = float(first)
+        except (OSError, ValueError):
+            return
+        if time.time() - started < SCAN_RESUME_MAX:
+            self.started, self.urls = started, set(rest) - {""}
+
+    @property
+    def active(self):
+        return bool(self.started)
+
+    def begin(self):
+        self.started, self.urls, self._dirty = time.time(), set(), 1
+        self.save()
+
+    def add(self, url):
+        self.urls.add(url)
+        self._dirty += 1
+        if self._dirty >= 200:
+            self.save()
+
+    def __contains__(self, url):
+        return url in self.urls
+
+    def finish(self):
+        self.started, self.urls, self._dirty = 0.0, set(), 0
+        try:
+            SCAN_FILE.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def save(self):
+        if not self._dirty or not self.started:
+            return
+        try:
+            SCAN_FILE.write_text("\n".join([repr(self.started), *self.urls]), encoding="utf-8")
             self._dirty = 0
         except OSError:
             pass

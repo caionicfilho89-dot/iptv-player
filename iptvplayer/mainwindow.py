@@ -23,7 +23,7 @@ from .audio import AudioEngine
 from .dub import Dubber
 from .captions import CaptionWorker, SubtitleOverlay, missing_deps, video_rect_global
 from .config import DEAD_TTL, Config
-from .discovery import MAX_ALT_TRIES, ExploredSet, LinkIndex, NewChannels, list_urls
+from .discovery import MAX_ALT_TRIES, ExploredSet, LinkIndex, NewChannels, ScanProgress, list_urls
 from .discovery import _norm_name as norm_channel_name
 from .dialogs import AddListDialog, GuideDialog, KidsDialog, SettingsDialog, pin_hash
 from .epg import EpgManager
@@ -82,6 +82,7 @@ class MainWindow(QMainWindow):
         self.auto_scanner.result.connect(self._on_auto_scan_result)
         self.auto_scanner.finished.connect(self._on_auto_scan_finished)
         self._auto_counts = [0, 0]
+        self.scan_progress = ScanProgress()
         QTimer.singleShot(3 * 60 * 1000, self._maybe_auto_scan)
         self.downloader = ListDownloader(self)
         self.downloader.one_done.connect(self._on_list_done)
@@ -1929,8 +1930,10 @@ class MainWindow(QMainWindow):
         return [groups[k] for k in order], len(channels) - len(order)
 
     def _maybe_auto_scan(self):
-        if (not self.cfg["auto_scan"] or self.auto_scanner.running
-                or time.time() - self.cfg["last_full_scan"] < AUTO_SCAN_EVERY):
+        if not self.cfg["auto_scan"] or self.auto_scanner.running:
+            return
+        resuming = self.scan_progress.active  # rodada interrompida quando o programa foi fechado
+        if not resuming and time.time() - self.cfg["last_full_scan"] < AUTO_SCAN_EVERY:
             return
         seen, targets = set(), []
         keys = [k for k, *_ in src.builtin_entries()] + [src.custom_key(s) for s in self.cfg["custom_sources"]]
@@ -1945,14 +1948,20 @@ class MainWindow(QMainWindow):
             for c in chans:
                 if c.url not in seen:
                     seen.add(c.url)
-                    targets.append(c)
+                    if c.url not in self.scan_progress:
+                        targets.append(c)
+        if not resuming:
+            self.scan_progress.begin()
         if not targets:
+            self._on_auto_scan_finished()
             return
-        log.info("Teste automático: %d canais", len(targets))
+        log.info("Teste automático: %d canais%s", len(targets),
+                 f" (continuando; {len(seen) - len(targets)} já testados)" if resuming else "")
         self._auto_counts = [0, 0]
         self.auto_scanner.start(targets)
 
     def _on_auto_scan_result(self, url, ok):
+        self.scan_progress.add(url)
         if self.current and self.current.url == url:
             return
         self._auto_counts[0 if ok else 1] += 1
@@ -1965,9 +1974,13 @@ class MainWindow(QMainWindow):
             self.view.viewport().update()
 
     def _on_auto_scan_finished(self):
+        if self.auto_scanner.cancelled:  # programa fechando: guarda o progresso para continuar depois
+            self.scan_progress.save()
+            return
         ok, dead = self._auto_counts
         log.info("Teste automático terminou: %d no ar, %d fora do ar", ok, dead)
         self.cfg["last_full_scan"] = time.time()
+        self.scan_progress.finish()
         self.cfg.save()
         if self.hide_dead_cb.isChecked():
             self._select_category(self.category, from_nav=None)
@@ -2382,6 +2395,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, e):
         self.scanner.stop()
         self.auto_scanner.stop()
+        self.scan_progress.save()
         if self.updater:
             self.updater.cancel()
         self.subs_timer.stop()
