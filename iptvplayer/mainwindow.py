@@ -30,6 +30,7 @@ from .discovery import MAX_ALT_TRIES, ExploredSet, LinkIndex, NewChannels, ScanP
 from .discovery import _norm_name as norm_channel_name
 from .dialogs import AddListDialog, GuideDialog, KidsDialog, SeriesDialog, SettingsDialog, pin_hash
 from .epg import EpgManager
+from .epggrid import EpgGridDialog
 from .health import Health
 from .log import log
 from .m3u import Channel, header_epg_urls, parse_m3u
@@ -263,6 +264,9 @@ class MainWindow(QMainWindow):
         self.view_btn = make_btn("grid", "Ver em grade", self._toggle_view_mode, kind="tool", icon_size=18)
         self.sort_btn = make_btn("sort", "Ordem da lista", self._sort_menu, kind="tool", icon_size=18)
         head.addWidget(self.sort_btn)
+        self.grid_guide_btn = make_btn("guide", "Grade de programação de todos os canais desta lista (Ctrl+Shift+G)",
+                                       self.open_grid, kind="tool", icon_size=18)
+        head.addWidget(self.grid_guide_btn)
         head.addWidget(self.view_btn)
         cl.addLayout(head)
         self.search = QLineEdit(placeholderText="Buscar canal ou programa…  (Ctrl+F)")
@@ -521,6 +525,7 @@ class MainWindow(QMainWindow):
         sc("Ctrl+Z", self.zap_btn.toggle)
         sc("Ctrl+Shift+Z", self.minute_btn.toggle)
         sc("Ctrl+G", self.open_guide)
+        sc("Ctrl+Shift+G", self.open_grid)
         sc("Ctrl+S", self.snapshot)
         sc("Ctrl+R", lambda: self.rec_btn.click())
         sc("Ctrl+P", self.enter_pip)
@@ -968,6 +973,13 @@ class MainWindow(QMainWindow):
         self.view.viewport().update()
         self._update_now_info()
         QTimer.singleShot(6000, lambda: self.side_lbl.text().startswith("Guia:") and self._side_status(""))
+
+    def open_grid(self):
+        """Grade de programação da categoria aberta (canais em linhas, programas numa linha do tempo)."""
+        if not self.epg.has_data():
+            return self._info("O guia de programação ainda está carregando…" if self.cfg["epg_enabled"]
+                              else "O guia de programação está desligado nas configurações.")
+        EpgGridDialog(self, self.visible, self._label_for(self.category)).exec()
 
     def open_guide(self):
         ch = self.vod["live"] if self.vod and self.vod["live"] else self.current
@@ -1616,6 +1628,10 @@ class MainWindow(QMainWindow):
         skip = self.skip_cb.isChecked()
         cur_url = self.current.url if self.current else None
         candidates = [c for c in seq if not (skip and self.status_of(c.url) == "dead") or c.url == cur_url]
+        if auto and skip:  # troca automática: evita os canais que costumam falhar, se houver outros
+            steady = [c for c in candidates if self.health.level(c.url) != 1 or c.url == cur_url]
+            if any(c.url != cur_url for c in steady):
+                candidates = steady
         if not candidates:
             self._set_status("✕ Nenhum canal disponível nesta lista", "bad")
             return

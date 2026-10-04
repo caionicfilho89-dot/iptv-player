@@ -31,6 +31,8 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
   sozinho e mostra só os que estão no ar
 - **Estabilidade dos canais** 🆕: barrinhas de sinal mostram quais canais costumam abrir e não travar, e a lista pode
   ser ordenada pelos **mais estáveis primeiro**
+- **Grade de programação** 🆕: todos os canais da lista numa linha do tempo, como na TV por assinatura — clique para
+  assistir, lembrar ou gravar (botão do guia no topo da lista ou `Ctrl+Shift+G`)
 - **Busca na programação** 🆕: digite "futebol" ou "jornal" e veja os canais que estão passando isso agora ou nas
   próximas horas
 - **Adicione suas próprias listas** por link (ex.: a da sua operadora de IPTV) ou arquivo `.m3u`
@@ -102,6 +104,7 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 | `Ctrl+Shift+Z` | Liga/desliga a rolagem automática de 1 minuto |
 | `Ctrl+E` | Liga/desliga o modo Explorar |
 | `Ctrl+G` | Guia de programação |
+| `Ctrl+Shift+G` | Grade de programação de todos os canais |
 | `Ctrl+S` | Foto da tela |
 | `Ctrl+R` | Gravar |
 | `Ctrl+P` | Janela flutuante |
