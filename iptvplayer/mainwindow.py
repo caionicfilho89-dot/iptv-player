@@ -438,6 +438,8 @@ class MainWindow(QMainWindow):
         self.dub_btn = make_btn("dub", "Dublagem por IA: fala a tradução em português por cima do som "
                                 "original (Ctrl+U)", kind="tool", checkable=True, icon_size=18)
         self.dub_btn.toggled.connect(self._toggle_dub)
+        self.tracks_btn = make_btn("tracks", "Áudio e legenda do canal (Ctrl+Shift+A)", self._tracks_menu,
+                                   kind="tool", icon_size=18)
         self.guide_btn = make_btn("guide", "Guia de programação (Ctrl+G)", self.open_guide, kind="tool", icon_size=18)
         self.snap_btn = make_btn("camera", "Tirar foto da tela (Ctrl+S)", self.snapshot, kind="tool", icon_size=18)
         self.rec_btn = make_btn("record", "Gravar canal (Ctrl+R)", self.toggle_record, kind="tool",
@@ -446,7 +448,7 @@ class MainWindow(QMainWindow):
         self.mosaic_btn = make_btn("mosaic", "Mosaico: vários canais ao mesmo tempo", self.open_mosaic,
                                    kind="tool", icon_size=18)
         self.sleep_btn = make_btn("timer", "Timer para desligar", self._sleep_menu, kind="tool", icon_size=18)
-        for b in (self.cc_btn, self.dub_btn, self.guide_btn, self.snap_btn, self.rec_btn, self.pip_btn, self.mosaic_btn, self.sleep_btn):
+        for b in (self.cc_btn, self.dub_btn, self.tracks_btn, self.guide_btn, self.snap_btn, self.rec_btn, self.pip_btn, self.mosaic_btn, self.sleep_btn):
             auto.addWidget(b)
         self.sleep_lbl = QLabel("", objectName="muted")
         auto.addWidget(self.sleep_lbl)
@@ -505,6 +507,7 @@ class MainWindow(QMainWindow):
         sc("Ctrl+L", self._toggle_view_mode)
         sc("Ctrl+T", self.cc_btn.toggle)
         sc("Ctrl+U", self.dub_btn.toggle)
+        sc("Ctrl+Shift+A", self._next_audio_track)
         sc("Ctrl+Left", lambda: self.seek_relative(-30))
         sc("Ctrl+Right", lambda: self.seek_relative(+30))
         sc("Ctrl+End", self.go_live)
@@ -943,6 +946,9 @@ class MainWindow(QMainWindow):
         if self.dubber:
             self.dubber.reset()
         self.subs.clear()
+        if self.tracks_btn.property("icon_color") == "accent":
+            self.tracks_btn.setProperty("icon_color", "text")
+            set_btn_icon(self.tracks_btn, "tracks")
         self.started_at = time.monotonic()
         self.confirmed = False
         self.last_time, self.last_progress = -1, time.monotonic()
@@ -1215,6 +1221,9 @@ class MainWindow(QMainWindow):
                 self.video.set_message("")
                 self.player.audio_set_volume(self.vol.value())
                 self._ts_buttons()
+                self._apply_saved_tracks()
+                url = self.current.url  # faixas de áudio e legenda às vezes só aparecem depois de alguns segundos
+                QTimer.singleShot(3000, lambda: self.current and self.current.url == url and self._apply_saved_tracks())
                 num = self.numbers.get(self.current.url)
                 self._show_marquee(f"{num}  {self.current.name}" if num else self.current.name)
                 self._update_count()
@@ -1775,6 +1784,84 @@ class MainWindow(QMainWindow):
             self._notify("Gravação concluída", f"{item['title']} — salvo em Vídeos\\IPTV Player")
 
     # ================================================================ timer para desligar
+    # ================================================================ faixas de áudio e legenda
+    def _track_lists(self):
+        """Faixas de áudio e de legenda do canal tocando, como [(id, nome)] (sem a opção "desligar")."""
+        def names(desc):
+            return [(i, n.decode("utf-8", "replace") if isinstance(n, bytes) else str(n))
+                    for i, n in (desc or []) if i >= 0]
+        if not self.current:
+            return [], []
+        return names(self.player.audio_get_track_description()), names(self.player.video_get_spu_description())
+
+    def _tracks_menu(self):
+        audio, spu = self._track_lists()
+        m = QMenu(self)
+
+        def header(text):
+            m.addAction(text).setEnabled(False)
+
+        def option(text, checked, fn):
+            a = m.addAction(text, fn)
+            a.setCheckable(True)
+            a.setChecked(checked)
+
+        if len(audio) < 2 and not spu:
+            header("Este canal não tem outros áudios nem legendas")
+        if len(audio) >= 2:
+            header("Áudio")
+            cur = self.player.audio_get_track()
+            for i, name in audio:
+                option(name, i == cur, lambda i=i, n=name: self._set_track("audio", i, n))
+        if spu:
+            if len(audio) >= 2:
+                m.addSeparator()
+            header("Legenda do canal")
+            cur = self.player.video_get_spu()
+            option("Desligada", cur < 0, lambda: self._set_track("spu", -1, ""))
+            for i, name in spu:
+                option(name, i == cur, lambda i=i, n=name: self._set_track("spu", i, n))
+        m.exec(self.tracks_btn.mapToGlobal(QPoint(0, -m.sizeHint().height() - 4)))
+
+    def _set_track(self, kind, track_id, name):
+        """Troca a faixa e lembra a escolha para este canal."""
+        if kind == "audio":
+            self.player.audio_set_track(track_id)
+        else:
+            self.player.video_set_spu(track_id)
+        if self.current:
+            self.cfg["tracks"].setdefault(self.current.url, {})[kind] = name
+            self.cfg.save()
+        self._show_marquee(f"{'Áudio' if kind == 'audio' else 'Legenda'}: {name or 'desligada'}")
+
+    def _next_audio_track(self):
+        audio, _ = self._track_lists()
+        if len(audio) < 2:
+            return self._show_marquee("Este canal só tem um áudio")
+        ids = [i for i, _ in audio]
+        cur = self.player.audio_get_track()
+        i, name = audio[(ids.index(cur) + 1) % len(ids) if cur in ids else 0]
+        self._set_track("audio", i, name)
+
+    def _apply_saved_tracks(self):
+        """Volta a usar o áudio e a legenda escolhidos da última vez neste canal; destaca o botão
+        quando o canal tem outras faixas."""
+        audio, spu = self._track_lists()
+        self.tracks_btn.setProperty("icon_color", "accent" if len(audio) >= 2 or spu else "text")
+        set_btn_icon(self.tracks_btn, "tracks")
+        pref = self.cfg["tracks"].get(self.current.url) if self.current else None
+        if not pref:
+            return
+        want = pref.get("audio")
+        for i, name in audio:
+            if name == want and i != self.player.audio_get_track():
+                self.player.audio_set_track(i)
+        if "spu" in pref:
+            want = pref["spu"]
+            target = next((i for i, name in spu if name == want), None) if want else -1
+            if target is not None and target != self.player.video_get_spu():
+                self.player.video_set_spu(target)
+
     def _sleep_menu(self):
         m = QMenu(self)
         m.addAction("Desativado", lambda: self._set_sleep(None))

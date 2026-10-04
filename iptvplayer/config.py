@@ -28,6 +28,7 @@ DEFAULTS = {
     "dub_voice": "", "dub_duck": 0.25,
     "timeshift": True, "timeshift_minutes": 30,
     "schedule": [],
+    "tracks": {},  # áudio/legenda escolhidos por canal: {url: {"audio": nome, "spu": nome ou ""}}
     "remote": False, "remote_key": "",
     "auto_scan": True, "last_full_scan": 0, "merge_dupes": True,
     "kids": False, "kids_pin": "", "kids_cats": ["infantil"],
