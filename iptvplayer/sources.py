@@ -32,6 +32,39 @@ BUILTIN = [
     ("español", "Español", "globe", "languages/spa.m3u"),
     ("mundo", "Mundo (Free-TV)", "antenna", FREE_TV),  # só canais abertos; complementa o iptv-org
 ]
+# grátis com propaganda (FAST): os canais oficiais de cada serviço, de todos os países, das listas do iptv-org
+# por serviço (trazem canais que ainda não entraram na lista geral)
+IPTV_ORG_STREAMS = "https://raw.githubusercontent.com/iptv-org/iptv/master/streams/"
+MJH = "https://i.mjh.nz/"
+
+
+def _streams(*names):
+    return tuple(IPTV_ORG_STREAMS + n + ".m3u" for n in names)
+
+
+_PLUTO = ("mx", "us", "ca", "uk", "es", "fr", "it", "de", "at", "ch", "dk", "no", "se")
+_SAMSUNG = ("br", "pt", "us", "mx", "ca", "uk", "ie", "es", "fr", "it", "de", "at", "ch", "be", "nl", "lu", "dk",
+            "no", "se", "fi", "in", "au", "nz")
+_RAKUTEN = ("es", "uk", "fr", "it", "de", "fi", "pl")
+# chave, rótulo, ícone, listas, guias de programação
+FAST = [
+    ("pluto_br", "Pluto TV Brasil", "tv", _streams("br_pluto"), (MJH + "PlutoTV/br.xml.gz",)),
+    ("pluto", "Pluto TV (mundo)", "tv", _streams(*(c + "_pluto" for c in _PLUTO)), (MJH + "PlutoTV/us.xml.gz",)),
+    ("samsung", "Samsung TV Plus", "tv", _streams(*(c + "_samsung" for c in _SAMSUNG)),
+     (MJH + "SamsungTVPlus/us.xml.gz",)),
+    ("rakuten", "Rakuten TV", "tv", _streams(*(c + "_rakuten" for c in _RAKUTEN)), ()),
+    ("plex", "Plex", "tv", _streams("us_plex"), (MJH + "Plex/us.xml.gz",)),
+    ("roku", "The Roku Channel", "tv", _streams("us_roku"), (MJH + "Roku/all.xml.gz",)),
+    ("tubi", "Tubi", "tv", _streams("us_tubi"), ()),
+    ("xumo", "Xumo Play", "tv", _streams("us_xumo"), ()),
+    ("stirr", "Stirr", "tv", _streams("us_stirr"), ()),
+    ("vizio", "Vizio WatchFree+", "tv", _streams("us_vizio"), ()),
+    ("tcl", "TCL tv+", "tv", _streams("us_tcl"), ()),
+    ("distro", "Distro TV", "tv", _streams("us_distro", "uk_distro", "in_distro"), ()),
+]
+BUILTIN += [(k, label, ic, remote) for k, label, ic, remote, _epg in FAST]
+FAST_KEYS = {f[0] for f in FAST}
+FAST_EPG = {f[0]: list(f[4]) for f in FAST}
 BUILTIN_KEYS = {b[0] for b in BUILTIN}
 
 
@@ -46,6 +79,9 @@ def builtin_entries():
 
 
 def _full_url(remote):
+    """Link da lista; uma categoria feita de várias listas (tupla) é baixada e juntada."""
+    if isinstance(remote, tuple):
+        return remote
     return remote if is_remote(remote) else IPTV_ORG + remote
 
 

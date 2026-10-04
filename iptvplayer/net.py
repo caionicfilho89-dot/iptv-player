@@ -1,6 +1,8 @@
 """Rede: logos, teste de canais e download de listas."""
 import hashlib
 import threading
+import time
+import urllib.request
 
 from PyQt6.QtCore import QObject, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QPixmap
@@ -184,12 +186,44 @@ class ListDownloader(QObject):
         while self.active < self.MAX_ACTIVE and self.queue:
             key, url, dest = self.queue.pop(0)
             self.active += 1
+            if isinstance(url, tuple):
+                threading.Thread(target=self._join_lists, args=(key, url, dest), daemon=True,
+                                 name="listas").start()
+                continue
             if xtream.is_api_url(url):
                 threading.Thread(target=self._build_xtream, args=(key, url, dest), daemon=True,
                                  name="xtream").start()
                 continue
             reply = self.nam.get(make_request(url, timeout=90000, user_agent=b"IPTV-Player"))
             reply.finished.connect(lambda r=reply, k=key, d=dest: self._done(r, k, d))
+
+    def _join_lists(self, key, urls, dest):
+        """Baixa as listas da categoria e junta numa só. O GitHub às vezes recusa muitos pedidos seguidos:
+        cada lista tem 3 tentativas e, se alguma faltar, a versão anterior completa é mantida."""
+        parts, missing = [], 0
+        for url in urls:
+            text = None
+            for attempt in range(3):
+                try:
+                    req = urllib.request.Request(url, headers={"User-Agent": "IPTV-Player"})
+                    with urllib.request.urlopen(req, timeout=60) as r:
+                        text = r.read().decode("utf-8", "replace")
+                    break
+                except OSError as e:
+                    if attempt == 2:
+                        log.warning("Lista %s não baixou (%s)", url.rsplit("/", 1)[-1], e)
+                    else:
+                        time.sleep(3 * (attempt + 1))
+            if text is None:
+                missing += 1
+                continue
+            parts.append("\n".join(ln for ln in text.splitlines() if not ln.startswith("#EXTM3U")))
+            time.sleep(0.3)
+        if missing and dest.exists():
+            data = b""  # fica com a cópia completa de antes
+        else:
+            data = ("#EXTM3U\n" + "\n".join(parts) + "\n").encode("utf-8") if parts else b""
+        self._built.emit(key, dest, data)
 
     def _build_xtream(self, key, url, dest):
         try:

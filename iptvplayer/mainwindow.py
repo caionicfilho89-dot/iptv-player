@@ -601,8 +601,14 @@ class MainWindow(QMainWindow):
             add(src.RECENT_KEY, "Recentes", "clock")
             add(src.NEW_KEY, f"Novos ({len(self.newch)})" if len(self.newch) else "Novos", "sparkle")
             section("Canais")
-            for key, label, ic in src.builtin_entries():
-                add(key, label, ic)
+            entries = src.builtin_entries()
+            for key, label, ic in entries:
+                if key not in src.FAST_KEYS:
+                    add(key, label, ic)
+            section("Grátis com propaganda")
+            for key, label, ic in entries:
+                if key in src.FAST_KEYS:
+                    add(key, label, ic)
         if self.cfg["custom_sources"] and not self.cfg["kids"]:
             section("Minhas listas")
             for s in self.cfg["custom_sources"]:
@@ -671,7 +677,7 @@ class MainWindow(QMainWindow):
                 self.playlists[key] = ([], {})
             if src.is_vod_key(key) and time.time() - path.stat().st_mtime > VOD_REFRESH:
                 QTimer.singleShot(0, lambda: self.update_lists([key]))  # mostra a cópia antiga enquanto baixa
-            if set(header_epg_urls(self.playlists[key][1])) - self._epg_urls_loaded:
+            if set(header_epg_urls(self.playlists[key][1]) + src.FAST_EPG.get(key, [])) - self._epg_urls_loaded:
                 QTimer.singleShot(0, self._reload_epg)
         return self.playlists[key][0]
 
@@ -722,6 +728,7 @@ class MainWindow(QMainWindow):
         if len(q) >= 3 and self.epg.has_data() and not src.is_vod_key(self.category):
             found = {c.url for c in named}
             self.epg_hits = self._epg_search(q, [c for c in self.all_channels if c.url not in found])
+        hide = hide or self.category in src.FAST_KEYS  # nos serviços grátis só aparece o que funciona
         self.visible = [c for c in self.all_channels
                         if (not q or q in c.name.lower() or q in c.group.lower() or c.url in self.epg_hits)
                         and (not grp or c.group == grp)
@@ -866,6 +873,8 @@ class MainWindow(QMainWindow):
         self.playlists.pop(key, None)
         if key == self.category:
             self._select_category(key, from_nav=None)
+            if key in src.FAST_KEYS and not self.scanner.running:
+                self._toggle_scan()  # lista nova de serviço grátis: descobre logo o que está no ar
         if key not in {k for k, *_ in src.builtin_entries()} and not key.startswith(src.CUSTOM_PREFIX):
             self._build_nav()
 
@@ -946,6 +955,8 @@ class MainWindow(QMainWindow):
         urls = list(self.cfg["epg_urls"])
         for _, header in self.playlists.values():
             urls += header_epg_urls(header)
+        for k in self.playlists:  # guia de cada serviço grátis aberto
+            urls += src.FAST_EPG.get(k, [])
         return list(dict.fromkeys(urls))
 
     def _reload_epg(self, force=False):

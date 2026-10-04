@@ -26,6 +26,13 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 - Listas por categoria (Brasil, Português, Filmes, Séries, Esportes, Notícias, Infantil…) **atualizadas
   automaticamente** a partir do [iptv-org](https://github.com/iptv-org/iptv)
 - **Mundo (Free-TV)**: mais ~1.300 canais abertos do mundo todo, da lista [Free-TV](https://github.com/Free-TV/IPTV)
+- **Grátis com propaganda** 🆕: Pluto TV Brasil, Pluto TV (mundo), Samsung TV Plus, Rakuten TV, Plex, Roku, Tubi,
+  Xumo, Stirr, Vizio, TCL e Distro — canais oficiais de todos os países, com guia de programação; o programa testa
+  sozinho e mostra só os que estão no ar
+- **Estabilidade dos canais** 🆕: barrinhas de sinal mostram quais canais costumam abrir e não travar, e a lista pode
+  ser ordenada pelos **mais estáveis primeiro**
+- **Busca na programação** 🆕: digite "futebol" ou "jornal" e veja os canais que estão passando isso agora ou nas
+  próximas horas
 - **Adicione suas próprias listas** por link (ex.: a da sua operadora de IPTV) ou arquivo `.m3u`
 - **Login da operadora (Xtream Codes)** 🆕: servidor, usuário e senha — canais por categoria e guia de programação
   vêm direto do servidor, e o programa mostra a validade da conta
