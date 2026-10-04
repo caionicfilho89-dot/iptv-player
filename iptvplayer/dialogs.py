@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from . import APP_VERSION, xtream
+from . import APP_VERSION, catchup, xtream
 from .captions import (
     CUDA_DOWNLOAD_MB, GPU_MODEL, LLM_MB, MODELS, NLLB_MB, SOURCE_LANGS, TRANSLATORS, cuda_ready, gpu_available,
     llm_ready, nllb_ready,
@@ -347,6 +347,100 @@ class AddListDialog(QDialog):
         return self.name.text().strip(), self._result_url
 
 
+class SeriesDialog(QDialog):
+    """Temporadas e episódios de uma série de uma conta Xtream (buscados no servidor ao abrir)."""
+
+    def __init__(self, ch, resume, parent=None):
+        super().__init__(parent)
+        self.ch, self.resume, self.seasons, self._box = ch, resume, {}, None
+        self.setWindowTitle(ch.name)
+        self.setMinimumSize(560, 560)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 14, 18, 16)
+        lay.addWidget(QLabel(ch.name, objectName="h2", wordWrap=True))
+        self.plot = QLabel("Buscando episódios…", objectName="muted", wordWrap=True)
+        lay.addWidget(self.plot)
+        self.season = QComboBox()
+        self.season.currentIndexChanged.connect(self._fill)
+        lay.addWidget(self.season)
+        self.lst = QListWidget()
+        self.lst.setWordWrap(True)
+        self.lst.setStyleSheet("QListWidget::item { padding: 8px 6px; border-bottom: 1px solid %s; }" % T["border"])
+        self.lst.itemDoubleClicked.connect(lambda _it: self._ok())
+        lay.addWidget(self.lst, 1)
+        self.ok_btn = QPushButton("▶  Assistir", objectName="primary")
+        self.ok_btn.setEnabled(False)
+        self.ok_btn.clicked.connect(self._ok)
+        cancel = QPushButton("Fechar")
+        cancel.clicked.connect(self.reject)
+        lay.addLayout(_row(cancel, self.ok_btn))
+        box = self._box = []
+
+        def work():
+            try:
+                box.append(xtream.series_episodes(ch.url))
+            except xtream.XtreamError as e:
+                box.append(e)
+        threading.Thread(target=work, daemon=True, name="xtream-series").start()
+        self._poll = QTimer(self, interval=150, timeout=self._loaded)
+        self._poll.start()
+
+    def _loaded(self):
+        if not self._box:
+            return
+        self._poll.stop()
+        res = self._box[0]
+        if isinstance(res, Exception):
+            self.plot.setText(f"Não foi possível buscar os episódios: {res}")
+            return
+        plot, self.seasons = res
+        if not self.seasons:
+            self.plot.setText("Esta série ainda não tem episódios.")
+            return
+        self.plot.setText(plot[:400])
+        self.plot.setVisible(bool(plot))
+        # abre na temporada do primeiro episódio ainda não assistido
+        start = next((n for n, eps in self.seasons.items()
+                      if any(self._state(url) != "visto" for _t, url, _p, _d in eps)), next(iter(self.seasons)))
+        for n in self.seasons:
+            self.season.addItem(f"Temporada {n}", n)
+        self.season.setCurrentIndex(list(self.seasons).index(start))
+        self._fill()
+
+    def _state(self, url):
+        pos = self.resume.get(url)
+        if not pos:
+            return ""
+        return "visto" if pos[0] < 0 else f"parou em {int(pos[0] // 60)} min"
+
+    def _fill(self, *_):
+        n = self.season.currentData()
+        if n is None:
+            return
+        self.lst.clear()
+        first_new = None
+        for i, (title, url, plot, dur) in enumerate(self.seasons[n]):
+            state = self._state(url)
+            extra = [x for x in (f"{dur // 60} min" if dur >= 60 else "", "✓ visto" if state == "visto" else state) if x]
+            it = QListWidgetItem(f"{i + 1}.  {title}" + (f"   ·  {'  ·  '.join(extra)}" if extra else "")
+                                 + (f"\n{plot[:220]}" if plot else ""))
+            if state == "visto":
+                it.setForeground(QColor(T["muted"]))
+            elif first_new is None:
+                first_new = i
+            self.lst.addItem(it)
+        self.lst.setCurrentRow(first_new or 0)
+        self.ok_btn.setEnabled(True)
+
+    def _ok(self):
+        if self.ok_btn.isEnabled() and self.lst.currentRow() >= 0:
+            self.accept()
+
+    def choice(self):
+        """(temporada, índice do episódio, todas as temporadas) escolhidos."""
+        return self.season.currentData(), self.lst.currentRow(), self.seasons
+
+
 def pin_hash(pin):
     import hashlib
     return hashlib.sha256(("iptv-player-kids:" + pin).encode()).hexdigest()
@@ -403,9 +497,10 @@ class KidsDialog(QDialog):
 class GuideDialog(QDialog):
     """Programação do canal; um programa selecionado pode ser lembrado ou gravado."""
 
-    def __init__(self, ch, schedule, parent=None, scheduler=None):
+    def __init__(self, ch, schedule, parent=None, scheduler=None, on_watch=None):
         super().__init__(parent)
         self.ch, self.scheduler = ch, scheduler
+        self.on_watch = on_watch if catchup.supports(ch) else None
         self.setWindowTitle(f"Guia — {ch.name}")
         self.setMinimumSize(560, 600)
         lay = QVBoxLayout(self)
@@ -417,8 +512,9 @@ class GuideDialog(QDialog):
         now = time.time()
         cur_row = 0
         last_day = None
+        keep = catchup.days(ch) * 86400 if self.on_watch else 3600  # o que já passou e ainda dá para assistir
         for start, stop, title, desc in schedule:
-            if stop < now - 3600:
+            if stop < now - keep:
                 continue
             day = time.strftime("%d/%m", time.localtime(start))
             if day != last_day:
@@ -442,6 +538,16 @@ class GuideDialog(QDialog):
             lst.addItem("Sem programação disponível para este canal.")
         lay.addWidget(lst, 1)
         lst.scrollToItem(lst.item(cur_row), QListWidget.ScrollHint.PositionAtTop)
+        lst.setCurrentRow(cur_row)
+        if self.on_watch:
+            self.watch_btn = QPushButton("▶  Assistir", objectName="primary")
+            self.watch_btn.setToolTip("Assiste o programa escolhido desde o começo (o canal guarda os últimos "
+                                      f"{catchup.days(ch)} dias)")
+            self.watch_btn.clicked.connect(self._watch)
+            lst.itemDoubleClicked.connect(lambda _it: self._watch())
+            lay.addLayout(_row(self.watch_btn))
+            lst.currentItemChanged.connect(self._update_watch)
+            self._update_watch()
         if scheduler:
             self.remind_btn = QPushButton("🔔  Lembrar")
             self.remind_btn.setToolTip("Aviso 1 minuto antes de começar; clique no aviso para ir ao canal")
@@ -464,10 +570,24 @@ class GuideDialog(QDialog):
         txt = f"{time.strftime('%H:%M', time.localtime(start))}   {title}"
         if start <= time.time() < stop:
             txt += "   ● AGORA"
+        elif self.on_watch and catchup.available(self.ch, start):
+            txt += "   ↺ assistir"
         if self.scheduler:
             kinds = self.scheduler.scheduled_kinds(self.ch, start)
             txt += "   🔔" * ("remind" in kinds) + "   ● REC agendado" * ("record" in kinds)
         it.setText(txt + (f"\n{desc}" if desc else ""))
+
+    def _update_watch(self, *_):
+        p = self._prog()
+        ok = bool(p) and catchup.available(self.ch, p[0])
+        self.watch_btn.setEnabled(ok)
+        self.watch_btn.setText("▶  Assistir do começo" if ok and p[1] > time.time() else "▶  Assistir")
+
+    def _watch(self):
+        p = self._prog()
+        if p and catchup.available(self.ch, p[0]):
+            self.accept()
+            self.on_watch(self.ch, p)
 
     def _update_buttons(self, *_):
         p = self._prog()

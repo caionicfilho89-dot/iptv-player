@@ -2,6 +2,7 @@
 import uuid
 from pathlib import Path
 
+from . import xtream
 from .paths import BASE, LIST_CACHE
 
 IPTV_ORG = "https://iptv-org.github.io/iptv/"
@@ -63,21 +64,49 @@ def new_custom(name, url):
     return {"id": uuid.uuid4().hex[:10], "name": name.strip() or "Minha lista", "url": url.strip()}
 
 
-def custom_key(src):
-    return CUSTOM_PREFIX + src["id"]
+# partes extras de uma conta Xtream na barra lateral: sufixo, rótulo, ícone
+VOD_PARTS = [("filmes", "Filmes", "film"), ("series", "Séries", "layers")]
 
 
-def custom_cache(src):
-    return LIST_CACHE / f"custom_{src['id']}.m3u"
+def vod_parts(src):
+    return VOD_PARTS if xtream.is_api_url(src["url"]) else []
+
+
+def custom_key(src, part=""):
+    return CUSTOM_PREFIX + src["id"] + (f"/{part}" if part else "")
+
+
+def is_vod_key(key):
+    return key.startswith(CUSTOM_PREFIX) and "/" in key
+
+
+def _find(key, custom_sources):
+    """Chave de lista do usuário -> (lista, parte), ou (None, "")."""
+    sid, _, part = key[len(CUSTOM_PREFIX):].partition("/")
+    return next((s for s in custom_sources if s["id"] == sid), None), part
+
+
+def custom_source(key, custom_sources):
+    """Lista do usuário a que a categoria pertence (também para filmes e séries de uma conta), ou None."""
+    return _find(key, custom_sources)[0] if key.startswith(CUSTOM_PREFIX) else None
+
+
+def custom_cache(src, part=""):
+    return LIST_CACHE / (f"custom_{src['id']}" + (f"_{part}" if part else "") + ".m3u")
+
+
+def custom_caches(src):
+    """Todos os arquivos baixados de uma lista do usuário (com filmes e séries de uma conta Xtream)."""
+    return [custom_cache(src)] + [custom_cache(src, part) for part, *_ in vod_parts(src)]
 
 
 def file_for(key, custom_sources):
     """Arquivo local da categoria (versão baixada tem prioridade), ou None."""
     if key.startswith(CUSTOM_PREFIX):
-        src = next((s for s in custom_sources if custom_key(s) == key), None)
+        src, part = _find(key, custom_sources)
         if not src:
             return None
-        p = custom_cache(src) if is_remote(src["url"]) else Path(src["url"])
+        p = custom_cache(src, part) if is_remote(src["url"]) else Path(src["url"])
         return p if p.exists() else None
     for p in (LIST_CACHE / f"{key}.m3u", BASE / f"{key}.m3u"):
         if p.exists():
@@ -87,19 +116,22 @@ def file_for(key, custom_sources):
 
 def download_url(key, custom_sources):
     if key.startswith(CUSTOM_PREFIX):
-        src = next((s for s in custom_sources if custom_key(s) == key), None)
-        return src["url"] if src and is_remote(src["url"]) else None
+        src, part = _find(key, custom_sources)
+        if not src or not is_remote(src["url"]):
+            return None
+        return xtream.part_url(src["url"], part) if part else src["url"]
     return remote_url(key)
 
 
 def cache_path(key, custom_sources):
     if key.startswith(CUSTOM_PREFIX):
-        src = next(s for s in custom_sources if custom_key(s) == key)
-        return custom_cache(src)
+        src, part = _find(key, custom_sources)
+        return custom_cache(src, part)
     return LIST_CACHE / f"{key}.m3u"
 
 
 def all_update_jobs(custom_sources):
     jobs = [(k, _full_url(r), LIST_CACHE / f"{k}.m3u") for k, _, _, r in BUILTIN if r]
+    # filmes e séries de uma conta Xtream ficam de fora: baixados quando a categoria é aberta
     jobs += [(custom_key(s), s["url"], custom_cache(s)) for s in custom_sources if is_remote(s["url"])]
     return jobs

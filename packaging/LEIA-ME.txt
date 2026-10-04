@@ -11,7 +11,8 @@ novos que ainda não têm assinatura digital.
 
 RECURSOS
 - Listas atualizadas automaticamente (iptv-org) e suas próprias listas por link ou arquivo
-- Login da operadora (Xtream Codes): servidor, usuário e senha
+- Login da operadora (Xtream Codes): servidor, usuário e senha, com filmes e séries
+- Assistir o que já passou: no guia, programas com ↺ (ou o atual desde o começo)
 - Escolha o áudio e a legenda do canal (botão do fone ou Ctrl+Shift+A)
 - Guia de programação: o que está passando agora e a seguir
 - Pular canais offline e zapping automático (também só pelos favoritos)

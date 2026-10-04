@@ -14,6 +14,11 @@ class Channel:
     geo: bool = False
     tvg_id: str = ""
     opts: list = field(default_factory=list)
+    kind: str = ""            # "" canal ao vivo, "movie" filme, "series" série (abre a lista de episódios)
+    catchup: str = ""         # assistir o que já passou: "xc", "default", "append", "shift", "flussonic"
+    catchup_days: int = 0
+    catchup_source: str = ""  # modelo do link do que já passou ({utc}, {duration}, {Y}-{m}-{d}…)
+    catchup_offset: int = 0   # fuso do servidor em segundos (para {Y}…{S})
 
     @classmethod
     def from_dict(cls, d):
@@ -26,6 +31,13 @@ ATTR_RE = re.compile(r'([\w-]+)="([^"]*)"')
 QUALITY_RE = re.compile(r"\((\d{3,4}[pi])\)")
 TAG_RE = re.compile(r"\[[^\]]*\]|\(\d{3,4}[pi]\)")
 FREETV_MARK_RE = re.compile("[ⓈⒼⓎ]")  # Ⓢ Ⓖ Ⓨ: marcas da lista Free-TV (SD, bloqueio por país, YouTube)
+
+
+def _int(v):
+    try:
+        return int(float(v or 0))
+    except ValueError:
+        return 0
 
 
 def parse_m3u_text(text):
@@ -67,6 +79,11 @@ def parse_m3u_text(text):
                 geo="Geo-blocked" in title or "Ⓖ" in title,  # Ⓖ: marca de bloqueio por país do Free-TV
                 tvg_id=attrs.get("tvg-id", ""),
                 opts=opts,
+                kind=attrs.get("x-kind", ""),
+                catchup=(attrs.get("catchup") or attrs.get("catchup-type") or "").lower(),
+                catchup_days=_int(attrs.get("catchup-days") or attrs.get("timeshift")),
+                catchup_source=attrs.get("catchup-source", ""),
+                catchup_offset=_int(attrs.get("x-catchup-offset")),
             ))
             info, opts = None, []
     return channels, header

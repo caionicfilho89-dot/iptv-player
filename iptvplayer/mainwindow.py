@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 from . import APP_NAME, APP_VERSION, REPO
+from . import catchup
 from . import sources as src
 from . import xtream
 from .audio import AudioEngine
@@ -26,7 +27,7 @@ from .captions import CaptionWorker, SubtitleOverlay, missing_deps, video_rect_g
 from .config import DEAD_TTL, Config
 from .discovery import MAX_ALT_TRIES, ExploredSet, LinkIndex, NewChannels, ScanProgress, list_urls
 from .discovery import _norm_name as norm_channel_name
-from .dialogs import AddListDialog, GuideDialog, KidsDialog, SettingsDialog, pin_hash
+from .dialogs import AddListDialog, GuideDialog, KidsDialog, SeriesDialog, SettingsDialog, pin_hash
 from .epg import EpgManager
 from .log import log
 from .m3u import Channel, header_epg_urls, parse_m3u
@@ -47,6 +48,8 @@ from .widgets import (
 AUTO_SCAN_EVERY = 6 * 3600   # teste automático de todos os canais (as marcas de offline duram 6 h)
 CONNECT_TIMEOUT = 15         # segundos para o canal começar a tocar
 STALL_TIMEOUT = 12           # segundos sem avançar = travado
+VOD_CONNECT_TIMEOUT = 30     # filmes e o que já passou demoram mais para abrir
+VOD_REFRESH = 3 * 86400      # filmes e séries de uma conta Xtream são baixados de novo depois de 3 dias
 MAX_CONSECUTIVE_FAILS = 25   # evita loop infinito pulando canais
 LIST_MAX_AGE = 86400          # atualização automática das listas (1× por dia)
 UPDATE_CHECK_EVERY = 12 * 3600
@@ -102,6 +105,7 @@ class MainWindow(QMainWindow):
         self._dead_checked = time.time()
         self.fail_streak = 0
         self.fullscreen = False
+        self.vod = None  # filme, episódio ou programa que já passou tocando (ver play_ondemand)
         self.confirmed = False
         self.started_at = 0.0
         self._status = ("", "muted")
@@ -588,6 +592,8 @@ class MainWindow(QMainWindow):
             section("Minhas listas")
             for s in self.cfg["custom_sources"]:
                 add(src.custom_key(s), s["name"], "link" if src.is_remote(s["url"]) else "folder")
+                for part, label, ic in src.vod_parts(s):
+                    add(src.custom_key(s, part), f"{s['name']} · {label}", ic)
         for i in range(self.nav.count()):
             if self.nav.item(i).data(Qt.ItemDataRole.UserRole) == self.category:
                 self.nav.setCurrentRow(i)
@@ -616,7 +622,7 @@ class MainWindow(QMainWindow):
         custom = self.cfg["custom_sources"]
         if src.download_url(key, custom):
             m.addAction(icon("refresh", "text", 16), "Atualizar esta lista", lambda: self.update_lists([key]))
-        if key.startswith(src.CUSTOM_PREFIX):
+        if key.startswith(src.CUSTOM_PREFIX) and not src.is_vod_key(key):
             m.addAction(icon("settings", "text", 16), "Editar…", lambda: self.edit_list(key))
             m.addAction(icon("trash", "bad", 16), "Remover lista", lambda: self.remove_list(key))
         if not m.isEmpty():
@@ -648,6 +654,8 @@ class MainWindow(QMainWindow):
                 self.playlists[key] = parse_m3u(path)
             except OSError:
                 self.playlists[key] = ([], {})
+            if src.is_vod_key(key) and time.time() - path.stat().st_mtime > VOD_REFRESH:
+                QTimer.singleShot(0, lambda: self.update_lists([key]))  # mostra a cópia antiga enquanto baixa
             if set(header_epg_urls(self.playlists[key][1])) - self._epg_urls_loaded:
                 QTimer.singleShot(0, self._reload_epg)
         return self.playlists[key][0]
@@ -663,9 +671,17 @@ class MainWindow(QMainWindow):
                     self.nav.blockSignals(False)
                     break
         self.category = key
+        # conta Xtream: testar milhares de links de uma conta paga pode bloqueá-la
+        account = src.custom_source(key, self.cfg["custom_sources"])
+        paid = bool(account and xtream.is_api_url(account["url"]))
+        if paid and self.scanner.running:
+            self.scanner.stop()
+        self.scan_btn.setEnabled(not paid)
+        self.scan_btn.setToolTip("Desligado nas contas de operadora, para não arriscar bloqueio da conta" if paid
+                                 else "Verifica em segundo plano quais canais desta lista estão no ar")
         self.all_channels = self._load_category(key)
         self.merged = 0
-        if self.cfg["merge_dupes"] and key not in src.SPECIAL_KEYS:
+        if self.cfg["merge_dupes"] and key not in src.SPECIAL_KEYS and not src.is_vod_key(key):
             self.all_channels, self.merged = self._merge_dupes(self.all_channels)
         self.numbers = {c.url: i + 1 for i, c in enumerate(self.all_channels)}
         if key not in src.SPECIAL_KEYS and not self.cfg["kids"]:
@@ -785,7 +801,7 @@ class MainWindow(QMainWindow):
         if old is None and not key.startswith(src.CUSTOM_PREFIX):
             old = list_urls(src.BASE / f"{key}.m3u")  # 1ª atualização: compara com a lista que veio no programa
         path = src.cache_path(key, self.cfg["custom_sources"])
-        if old and path.exists():
+        if old and path.exists() and not src.is_vod_key(key):  # filmes novos não viram "canal novo"
             try:
                 fresh = [c for c in parse_m3u(path)[0] if c.url not in old]
                 self._new_found += self.newch.record(fresh)
@@ -843,9 +859,11 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             s["name"], new_url = dlg.values()
             if new_url != s["url"]:
+                for f in src.custom_caches(s):
+                    f.unlink(missing_ok=True)
                 s["url"] = new_url
-                src.custom_cache(s).unlink(missing_ok=True)
-                self.playlists.pop(key, None)
+                for k in [k for k in self.playlists if k == key or k.startswith(key + "/")]:
+                    self.playlists.pop(k)
             self.cfg.save()
             self._build_nav()
             self._select_category(key)
@@ -856,11 +874,13 @@ class MainWindow(QMainWindow):
                 != QMessageBox.StandardButton.Yes:
             return
         self.cfg["custom_sources"] = [x for x in self.cfg["custom_sources"] if x is not s]
-        src.custom_cache(s).unlink(missing_ok=True)
-        self.playlists.pop(key, None)
+        for f in src.custom_caches(s):
+            f.unlink(missing_ok=True)
+        for k in [k for k in self.playlists if k == key or k.startswith(key + "/")]:
+            self.playlists.pop(k)
         self.cfg.save()
         self._build_nav()
-        if self.category == key:
+        if self.category == key or self.category.startswith(key + "/"):
             self._select_category("melhor_iptv")
 
     # ================================================================ EPG
@@ -883,9 +903,12 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(6000, lambda: self.side_lbl.text().startswith("Guia:") and self._side_status(""))
 
     def open_guide(self):
-        if not self.current:
+        ch = self.vod["live"] if self.vod and self.vod["live"] else self.current
+        if not ch:
             return self._info("Escolha um canal para ver o guia.")
-        GuideDialog(self.current, self.epg.schedule(self.current), self, scheduler=self).exec()
+        if ch.kind:
+            return self._info("Filmes e séries não têm guia de programação.")
+        GuideDialog(ch, self.epg.schedule(ch), self, scheduler=self, on_watch=self.watch_program).exec()
 
     # ================================================================ estado
     def status_of(self, url):
@@ -930,6 +953,10 @@ class MainWindow(QMainWindow):
         """stream = (url, opções) de um link alternativo; sem ele usa o link da lista (ou o que já substituiu)."""
         if ch is None:
             return
+        if ch.kind == "series":
+            return self.open_series(ch)
+        if ch.kind in ("movie", "episode"):
+            return self.play_ondemand(ch, ch.url, start=self._resume_pos(ch.url))
         if (not force and self.current and ch.url == self.current.url
                 and time.monotonic() - self.started_at < 1.5):
             return  # clique duplo não reinicia o canal
@@ -938,6 +965,7 @@ class MainWindow(QMainWindow):
         log.info("Tocando: %s — %s", ch.name, xtream.redact(stream[0] if stream else ch.url))
         if not auto:
             self.fail_streak = 0
+        self.vod = None
         self.current = ch
         self.retried = False
         if stream is None:
@@ -946,17 +974,7 @@ class MainWindow(QMainWindow):
             stream = (fix["url"], fix["opts"]) if fix else (ch.url, ch.opts)
         self.stream = stream
         self._open_stream(stream)
-        if self.captions:
-            self.captions.reset()
-        if self.dubber:
-            self.dubber.reset()
-        self.subs.clear()
-        if self.tracks_btn.property("icon_color") == "accent":
-            self.tracks_btn.setProperty("icon_color", "text")
-            set_btn_icon(self.tracks_btn, "tracks")
-        self.started_at = time.monotonic()
-        self.confirmed = False
-        self.last_time, self.last_progress = -1, time.monotonic()
+        self._begin_playback()
         self._mark(ch.url, "loading")
         self.video.set_message("Conectando…")
         self.cfg["last_url"] = ch.url
@@ -968,6 +986,182 @@ class MainWindow(QMainWindow):
         set_btn_icon(self.overlay.play_btn, "pause")
         self._select_current_in_view()
         self.zap_left = self.zap_spin.value()
+
+    def _begin_playback(self):
+        """Zera o que dependia do que estava tocando (legendas, faixas, tempos)."""
+        if self.captions:
+            self.captions.reset()
+        if self.dubber:
+            self.dubber.reset()
+        self.subs.clear()
+        if self.tracks_btn.property("icon_color") == "accent":
+            self.tracks_btn.setProperty("icon_color", "text")
+            set_btn_icon(self.tracks_btn, "tracks")
+        self.started_at = time.monotonic()
+        self.confirmed = False
+        self.last_time, self.last_progress = -1, time.monotonic()
+
+    # ================================================================ filmes, episódios e o que já passou
+    def play_ondemand(self, item, url, info="", start=0.0, live=None, playlist=None):
+        """Toca algo com começo e fim: filme, episódio ou programa que já passou (catch-up).
+        item: o que aparece como tocando (item.url é a chave para continuar de onde parou);
+        live: canal ao vivo do botão "ao vivo"; playlist: próximos episódios [(item, info)]."""
+        log.info("Tocando sob demanda: %s — %s", item.name, xtream.redact(url))
+        if self.current and self.session_status.get(self.current.url) == "loading":
+            self.session_status.pop(self.current.url)
+        self.explore_btn.setChecked(False)
+        self.zap_btn.setChecked(False)
+        self.vod = {"url": url, "info": info, "live": live, "next": list(playlist or []), "start": start,
+                    "saved_at": 0.0, "ended": False}
+        self.current = item
+        self.stream = (url, list(item.opts))
+        self.player.stop()
+        self.timeshift.close()
+        self._ts_sid = None
+        self._set_media(url, list(item.opts) + ([f":start-time={int(start)}"] if start > 5 else []))
+        self._begin_playback()
+        if item.kind in ("movie", "episode"):
+            self._add_recent(item)
+        self.video.set_message("Abrindo…")
+        self._set_status("◌ Abrindo…", "warn")
+        set_btn_icon(self.fav_btn, "star_fill" if self.is_fav(item.url) else "star",
+                     "star" if self.is_fav(item.url) else "text")
+        for b in (self.play_btn, self.overlay.play_btn):
+            set_btn_icon(b, "pause")
+        self._ts_buttons()
+        self._select_current_in_view()
+        if start > 5:
+            self._info(f"Continuando de {self._fmt_clock(start)} — para ver do começo, clique com o botão "
+                       "direito no item.", 8)
+
+    @staticmethod
+    def _fmt_clock(sec):
+        sec = int(max(0, sec))
+        h, rest = divmod(sec, 3600)
+        m, s = divmod(rest, 60)
+        return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+    def _resume_pos(self, key):
+        pos = self.cfg["resume"].get(key)
+        return float(pos[0]) if pos and pos[0] > 0 else 0.0
+
+    def _save_resume(self, final=False):
+        """Guarda onde parou no filme/episódio (some quando assiste até o fim)."""
+        if not (self.vod and self.current and self.current.kind in ("movie", "episode") and self.confirmed):
+            return
+        length = self.player.get_length() / 1000
+        pos = self.player.get_time() / 1000
+        resume = self.cfg["resume"]
+        if final or (length > 0 and pos > length - 120 and pos / length > 0.9):
+            resume[self.current.url] = [-1, length, time.time()]  # assistido
+        elif pos > 60:
+            resume[self.current.url] = [pos, length, time.time()]
+        else:
+            return
+        if len(resume) > 400:  # esquece os mais antigos
+            for k in sorted(resume, key=lambda k: resume[k][2])[:len(resume) - 400]:
+                resume.pop(k)
+        self.vod["saved_at"] = time.monotonic()
+
+    def _vod_tick(self):
+        st = self.player.get_state()
+        now = time.monotonic()
+        vod = self.vod
+        if vod["ended"]:
+            return
+        if st == vlc.State.Error or (st == vlc.State.Ended and not self.confirmed):
+            return self._vod_failed("o servidor não entregou o vídeo")
+        if st == vlc.State.Ended:
+            return self._vod_ended()
+        if not self.confirmed:
+            if st == vlc.State.Playing and (self.player.has_vout() or self.player.get_time() > 800):
+                self.confirmed = True
+                kind = self.current.kind
+                self._set_status({"movie": "▶ Filme", "episode": "▶ Episódio"}.get(kind, "◷ Já passou"),
+                                 "ok" if kind else "warn")
+                self.video.set_message("")
+                self.player.audio_set_volume(self.vol.value())
+                self._apply_saved_tracks()
+                item = self.current
+                QTimer.singleShot(3000, lambda: self.current is item and self._apply_saved_tracks())
+                self._ts_buttons()
+                self._show_marquee(self.current.name)
+            elif now - self.started_at > VOD_CONNECT_TIMEOUT:
+                self._vod_failed("não respondeu")
+            return
+        self._vod_seek_update()
+        if now - vod["saved_at"] > 15:
+            self._save_resume()
+
+    def _vod_failed(self, reason):
+        log.warning("Sob demanda falhou: %s (%s)", self.current.name, reason)
+        self.player.stop()
+        self.vod["ended"] = True
+        self._set_status(f"✕ Não abriu ({reason})", "bad")
+        self.video.set_message(f"Não foi possível abrir “{self.current.name}”.\n"
+                               "Clique em ▶ para tentar de novo.")
+        for b in (self.play_btn, self.overlay.play_btn):
+            set_btn_icon(b, "play")
+
+    def _vod_ended(self):
+        self._save_resume(final=True)
+        self.vod["ended"] = True
+        for b in (self.play_btn, self.overlay.play_btn):
+            set_btn_icon(b, "play")
+        if self.vod["next"]:
+            nxt, info = self.vod["next"][0]
+            rest, live = self.vod["next"][1:], self.vod["live"]
+            self._set_status("■ Terminou", "muted")
+            self.video.set_message(f"A seguir: {nxt.name}")
+            cur = self.current
+            QTimer.singleShot(5000, lambda: self.current is cur and self.play_ondemand(
+                nxt, nxt.url, info, start=self._resume_pos(nxt.url), live=live, playlist=rest))
+            return
+        self._set_status("■ Terminou", "muted")
+        self.video.set_message(f"Fim de “{self.current.name}”")
+
+    def _vod_restart(self):
+        """▶ depois de terminar ou falhar: começa de novo (do ponto salvo, se houver)."""
+        vod, item = self.vod, self.current
+        start = self._resume_pos(item.url) if item.kind in ("movie", "episode") else 0.0
+        self.play_ondemand(item, vod["url"], vod["info"], start=start, live=vod["live"], playlist=vod["next"])
+
+    def _vod_seek_update(self):
+        if self.seek.isSliderDown():
+            return
+        length = self.player.get_length() / 1000
+        pos = self.player.get_time() / 1000
+        self.seek.blockSignals(True)
+        self.seek.setRange(0, max(1, int(length)))
+        self.seek.setValue(int(min(max(pos, 0), max(length, 0))))
+        self.seek.blockSignals(False)
+        self.seek_pos_lbl.setText(self._fmt_clock(pos))
+        self.seek_end_lbl.setText(self._fmt_clock(length) if length > 0 else "")
+
+    def watch_program(self, ch, prog):
+        """Assiste um programa do guia que já passou (ou o atual desde o começo)."""
+        start, stop, title, _desc = prog
+        url = catchup.url_for(ch, start, stop)
+        if not url:
+            return self._info("Este canal não permite assistir o que já passou.")
+        when = f"{time.strftime('%d/%m', time.localtime(start))} {hm(start)}–{hm(stop)}"
+        item = replace(ch, url=url, kind="catchup", catchup="")
+        self.play_ondemand(item, url, f"Já passou: <b>{title}</b>  ({when})", live=ch)
+
+    def open_series(self, ch):
+        dlg = SeriesDialog(ch, self.cfg["resume"], self)
+        if not dlg.exec():
+            return
+        season, idx, seasons = dlg.choice()
+        queue = []
+        for s_num, eps in seasons.items():
+            for i, (title, url, plot, _dur) in enumerate(eps):
+                if (s_num, i) >= (season, idx):
+                    name = f"{ch.name} — T{s_num} E{i + 1}: {title}" if not title.startswith(ch.name) else title
+                    item = Channel(name=name, url=url, logo=ch.logo, group=ch.group, kind="episode")
+                    queue.append((item, plot[:200]))
+        first, info = queue[0]
+        self.play_ondemand(first, first.url, info, start=self._resume_pos(first.url), playlist=queue[1:])
 
     # ================================================================ pausar e voltar a TV ao vivo
     def _open_stream(self, stream):
@@ -1049,6 +1243,10 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1500, self._ts_status)
 
     def seek_relative(self, seconds):
+        if self.vod:
+            if self.confirmed and not self.vod["ended"]:
+                self.player.set_time(max(0, self.player.get_time() + int(seconds * 1000)))
+            return
         if not self._ts_active():
             return self._info("Este canal não permite voltar ou avançar." if self.current else "")
         base = self._paused_at if self._paused_at is not None else self._ts_pos()
@@ -1056,14 +1254,23 @@ class MainWindow(QMainWindow):
         self._ts_open_at(min(max(start, base + seconds), self._ts_live_point()))
 
     def go_live(self):
+        if self.vod:
+            if self.vod["live"]:
+                self.play(self.vod["live"], force=True)
+            return
         if self._ts_active():
             self._ts_open_at(self._ts_live_point())
 
     def _ts_buttons(self):
         on = self._ts_active()
-        for b in (self.back_btn, self.fwd_btn, self.live_btn, self.clip_btn):
-            b.setEnabled(on)
-        self.seek_row.setVisible(on)
+        vod = bool(self.vod)
+        for b in (self.back_btn, self.fwd_btn):
+            b.setEnabled(on or vod)
+        self.live_btn.setEnabled(on or bool(vod and self.vod["live"]))
+        self.clip_btn.setEnabled(on)
+        self.seek_row.setVisible(on or vod)
+        self.seek.setToolTip("Arraste ou clique para ir a qualquer ponto" if vod else
+                             "Arraste ou clique para ir a qualquer ponto do que foi guardado")
 
     def _clip_menu(self):
         if not self._ts_active():
@@ -1113,9 +1320,15 @@ class MainWindow(QMainWindow):
         self.seek_end_lbl.setText(f"{int(kept // 60)}:{int(kept % 60):02d} guardados")
 
     def _seek_preview(self, value):
+        if self.vod:
+            return self.seek_pos_lbl.setText(self._fmt_clock(value))
         self.seek_pos_lbl.setText(self._fmt_behind(self.seek.maximum() - value))
 
     def _seek_released(self):
+        if self.vod:
+            if self.confirmed and not self.vod["ended"]:
+                self.player.set_time(int(self.seek.value() * 1000))
+            return
         if self._ts_active():
             self._ts_open_at(float(self.seek.value()))
 
@@ -1155,7 +1368,9 @@ class MainWindow(QMainWindow):
         self.now_title.setText(title)
         self.now_status.setText(status_html if ch else "")
         epg_txt, frac = "", None
-        if ch and self.cfg["epg_enabled"]:
+        if ch and self.vod:
+            epg_txt = self.vod["info"]
+        elif ch and self.cfg["epg_enabled"]:
             cur, nxt = self.epg.now_next(ch)
             if cur:
                 epg_txt = f"Agora: <b>{cur[2]}</b>  ({hm(cur[0])}–{hm(cur[1])})"
@@ -1204,6 +1419,8 @@ class MainWindow(QMainWindow):
     def _monitor_tick(self):
         if not self.current:
             return
+        if self.vod:
+            return self._vod_tick()
         st = self.player.get_state()
         now = time.monotonic()
         if st in (vlc.State.Error, vlc.State.Ended):
@@ -1344,6 +1561,17 @@ class MainWindow(QMainWindow):
     def toggle_pause(self):
         if not self.current:
             return self.step(+1)
+        if self.vod:
+            if self.vod["ended"] or self.player.get_state() in (vlc.State.Stopped, vlc.State.Error,
+                                                                vlc.State.Ended, vlc.State.NothingSpecial):
+                return self._vod_restart()
+            paused = self.player.get_state() != vlc.State.Paused
+            self.player.pause()
+            if paused:
+                self._save_resume()
+            for b in (self.play_btn, self.overlay.play_btn):
+                set_btn_icon(b, "play" if paused else "pause")
+            return
         if self.player.get_state() in (vlc.State.Stopped, vlc.State.Error, vlc.State.Ended,
                                        vlc.State.NothingSpecial):
             return self.play(self.current, force=True)
@@ -1364,6 +1592,8 @@ class MainWindow(QMainWindow):
             set_btn_icon(b, "play" if paused else "pause")
 
     def stop(self):
+        self._save_resume()
+        self.vod = None
         self.player.stop()
         self.timeshift.close()
         self._ts_sid = None
@@ -1446,6 +1676,8 @@ class MainWindow(QMainWindow):
             self.minute_btn.blockSignals(False)
 
     def _zap_tick(self):
+        if self.vod:
+            return
         exploring = self.explore_btn.isChecked()
         if not (self.zap_btn.isChecked() or exploring) or not self.current or not self.confirmed:
             return  # só conta tempo enquanto o canal está realmente tocando
@@ -1981,13 +2213,20 @@ class MainWindow(QMainWindow):
         ch = idx.data(Qt.ItemDataRole.UserRole)
         m = QMenu(self)
         m.addAction(icon("play", "text", 16), "Assistir", lambda: self.play(ch, force=True))
+        if ch.kind == "movie" and self._resume_pos(ch.url):
+            m.addAction(icon("refresh", "text", 16), "Assistir do começo",
+                        lambda: self.play_ondemand(ch, ch.url, start=0))
+        cur = self.epg.now_next(ch)[0] if catchup.supports(ch) else None
+        if cur and catchup.available(ch, cur[0]):
+            m.addAction(icon("back", "text", 16), f"Assistir do começo: {cur[2][:40]}",
+                        lambda: self.watch_program(ch, cur))
         fav = self.is_fav(ch.url)
         m.addAction(icon("star_fill" if fav else "star", "star", 16),
                     "Remover dos favoritos" if fav else "Adicionar aos favoritos", lambda: self.toggle_fav(ch))
         m.addAction(icon("record", "bad", 16), "Gravar este canal", lambda: self.record_channel(ch))
         if self.epg.schedule(ch):
             m.addAction(icon("guide", "text", 16), "Ver guia de programação",
-                        lambda: GuideDialog(ch, self.epg.schedule(ch), self).exec())
+                        lambda: GuideDialog(ch, self.epg.schedule(ch), self, on_watch=self.watch_program).exec())
         m.addSeparator()
         m.addAction(icon("link", "text", 16), "Copiar link", lambda: QGuiApplication.clipboard().setText(ch.url))
         if self.status_of(ch.url) == "dead":
@@ -2487,6 +2726,7 @@ class MainWindow(QMainWindow):
 
     # ================================================================ encerramento
     def closeEvent(self, e):
+        self._save_resume()
         self.scanner.stop()
         self.auto_scanner.stop()
         self.scan_progress.save()

@@ -29,6 +29,11 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 - **Adicione suas próprias listas** por link (ex.: a da sua operadora de IPTV) ou arquivo `.m3u`
 - **Login da operadora (Xtream Codes)** 🆕: servidor, usuário e senha — canais por categoria e guia de programação
   vêm direto do servidor, e o programa mostra a validade da conta
+- **Filmes e séries da operadora** 🆕: cada conta ganha *Filmes* e *Séries* na barra lateral — escolha temporada e
+  episódio, **continue de onde parou** e o **próximo episódio começa sozinho**
+- **Assistir o que já passou (catch-up)** 🆕: no guia, os programas marcados com ↺ podem ser vistos de novo, e o
+  programa atual pode ser visto **desde o começo** (canais da operadora que guardam a programação, ou listas M3U
+  com `catchup=`)
 - **Guia de programação (EPG)**: o que está passando agora e a seguir, com barra de progresso
 - Busca, filtro por grupo, favoritos ⭐ e recentes
 - **Listas atualizadas todo dia**, com os canais que chegaram marcados como **NOVO** e reunidos na categoria **Novos**
