@@ -42,6 +42,10 @@ Name: "desktopicon"; Description: "Criar atalho na área de trabalho"; GroupDesc
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[InstallDelete]
+; backend OpenSSL do Qt de versões até a 1.8.0: feito para outro OpenSSL, derrubava o programa (ver app.use_windows_tls)
+Type: files; Name: "{app}\_internal\PyQt6\Qt6\plugins\tls\qopensslbackend.dll"
+
 [Icons]
 Name: "{group}\IPTV Player"; Filename: "{app}\IPTV Player.exe"
 Name: "{group}\Desinstalar IPTV Player"; Filename: "{uninstallexe}"
