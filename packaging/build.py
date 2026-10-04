@@ -105,6 +105,11 @@ def main():
                        "ctranslate2.converters") for a in ("--exclude-module", m)],
          str(ROOT / "iptv_player.py")])
 
+    # o Qt usa o HTTPS do Windows (app.use_windows_tls); sem o backend OpenSSL ele não pode ser carregado por engano
+    # (feito para o OpenSSL 3.5, encontraria o 3.2 do Python e derrubava o programa)
+    for f in APP_DIR.glob("_internal/PyQt6/Qt6/plugins/tls/qopensslbackend.dll"):
+        f.unlink()
+
     for f in ROOT.glob("*.m3u"):
         shutil.copy2(f, APP_DIR)
     shutil.copy2(ROOT / "LICENSE", APP_DIR)

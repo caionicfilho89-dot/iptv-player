@@ -10,6 +10,16 @@ from .theme import apply_theme, build_style
 from .vlcload import VLC_MISSING_MSG, vlc
 
 
+def use_windows_tls():
+    """HTTPS do Qt pela segurança do próprio Windows (Schannel). O Qt 6.11 foi feito para o OpenSSL 3.5, mas o
+    pacote leva o OpenSSL 3.2 do Python: funções que faltam viravam ponteiro nulo e o programa fechava sozinho
+    alguns minutos depois de abrir (ao baixar logos, testar canais ou listas)."""
+    from PyQt6.QtNetwork import QSslSocket
+    if "schannel" in QSslSocket.availableBackends() and QSslSocket.setActiveBackend("schannel"):
+        return
+    log.warning("HTTPS: Schannel indisponível, usando %s", QSslSocket.activeBackend())
+
+
 def main():
     if sys.platform == "win32":
         import ctypes
@@ -19,6 +29,7 @@ def main():
         from .selftest import run
         sys.exit(0 if run() else 1)
     app = QApplication(sys.argv)
+    use_windows_tls()
     app.setStyle("Fusion")
     cfg = Config()
     apply_theme(cfg["theme"], cfg["accent"])
