@@ -80,7 +80,10 @@ class ChannelModel(QAbstractListModel):
         if role == Qt.ItemDataRole.DisplayRole:
             return ch.name
         if role == Qt.ItemDataRole.ToolTipRole:
-            return f"{ch.name}\n{ch.group}  {ch.quality}".strip()
+            tip = f"{ch.name}\n{ch.group}  {ch.quality}".strip()
+            health = getattr(self.parent(), "health", None)
+            extra = health.describe(ch.url) if health else ""
+            return tip + (f"\n{extra}" if extra else "")
         return None
 
 
@@ -113,7 +116,10 @@ class _BaseDelegate(QStyledItemDelegate):
             p.drawText(box, Qt.AlignmentFlag.AlignCenter, "".join(w[0] for w in ch.name.split()[:2]).upper() or "?")
 
     def _subtitle(self, ch):
-        """Programa atual (EPG) ou grupo/qualidade."""
+        """Programa encontrado pela busca, programa atual (EPG) ou grupo/qualidade."""
+        hit = self.win.epg_hits.get(ch.url)
+        if hit:
+            return hit, T["accent"]
         cur, _ = self.win.epg.now_next(ch) if self.win.epg.has_data() else (None, None)
         if cur:
             return "▶ " + cur[2], T["accent"]
@@ -134,6 +140,19 @@ class _BaseDelegate(QStyledItemDelegate):
         p.setPen(QColor("white"))
         p.drawText(r, Qt.AlignmentFlag.AlignCenter, "NOVO")
         return w
+
+    def _signal(self, p, x, y, ch):
+        """Barrinhas de sinal: quanto o canal costuma funcionar (nada quando ainda não há dados)."""
+        level = self.win.health.level(ch.url)
+        if not level:
+            return
+        color = QColor({3: T["ok"], 2: T["warn"], 1: T["bad"]}[level])
+        dim = QColor(T["border_hover"])
+        p.setPen(Qt.PenStyle.NoPen)
+        for i in range(3):
+            h = 4 + 3 * i
+            p.setBrush(color if i < level else dim)
+            p.drawRoundedRect(x + i * 4, y + 10 - h, 3, h, 1, 1)
 
     def _status_color(self, ch):
         return {"ok": T["ok"], "dead": T["bad"], "loading": T["warn"]}.get(self.win.status_of(ch.url))
@@ -174,6 +193,9 @@ class ListDelegate(_BaseDelegate):
         right_w = 44
         if self.win.is_new(ch.url):
             right_w += self._new_badge(p, r.right() - 46, r.top() + 10, option.font, right=True) + 6
+        if self.win.health.level(ch.url):
+            self._signal(p, r.right() - right_w - 10, r.top() + 11, ch)
+            right_w += 18
         tx = box.right() + 12
         name_rect = QRect(tx, r.top() + 8, r.right() - tx - right_w, 20)
         f = QFont(option.font)

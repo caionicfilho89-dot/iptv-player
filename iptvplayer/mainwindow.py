@@ -4,6 +4,7 @@ import math
 import random
 import re
 import time
+import unicodedata
 from dataclasses import replace
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from .discovery import MAX_ALT_TRIES, ExploredSet, LinkIndex, NewChannels, ScanP
 from .discovery import _norm_name as norm_channel_name
 from .dialogs import AddListDialog, GuideDialog, KidsDialog, SeriesDialog, SettingsDialog, pin_hash
 from .epg import EpgManager
+from .health import Health
 from .log import log
 from .m3u import Channel, header_epg_urls, parse_m3u
 from .mosaic import MosaicWindow
@@ -55,6 +57,11 @@ LIST_MAX_AGE = 86400          # atualização automática das listas (1× por di
 UPDATE_CHECK_EVERY = 12 * 3600
 COMPACT_BELOW = 1340         # largura da janela abaixo da qual a barra lateral vira só ícones
 LABEL_ROLE = Qt.ItemDataRole.UserRole + 1
+
+
+def fold(text):
+    """Minúsculas e sem acento, para buscar "noticias" e achar "Notícias"."""
+    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
 
 
 def hm(ts):
@@ -87,6 +94,9 @@ class MainWindow(QMainWindow):
         self.auto_scanner.finished.connect(self._on_auto_scan_finished)
         self._auto_counts = [0, 0]
         self.scan_progress = ScanProgress()
+        self.health = Health()  # quais canais costumam abrir e não travar
+        self.epg_hits = {}      # busca na programação: url -> programa encontrado
+        QTimer(self, interval=5 * 60 * 1000, timeout=self.health.save).start()
         QTimer.singleShot(3 * 60 * 1000, self._maybe_auto_scan)
         self.downloader = ListDownloader(self)
         self.downloader.one_done.connect(self._on_list_done)
@@ -174,6 +184,9 @@ class MainWindow(QMainWindow):
         self.search_debounce = QTimer(self, singleShot=True, interval=180, timeout=self._apply_filter)
         self.zap_left = 0
 
+        if self.cfg["sort_mode"] != "list":
+            self.sort_btn.setProperty("icon_color", "accent")
+            set_btn_icon(self.sort_btn, "sort")
         self._shortcuts()
         QApplication.instance().installEventFilter(self)
         self._set_compact(self._narrow_screen())
@@ -248,9 +261,11 @@ class MainWindow(QMainWindow):
         self.cat_title = QLabel("", objectName="nowTitle")
         head.addWidget(self.cat_title, 1)
         self.view_btn = make_btn("grid", "Ver em grade", self._toggle_view_mode, kind="tool", icon_size=18)
+        self.sort_btn = make_btn("sort", "Ordem da lista", self._sort_menu, kind="tool", icon_size=18)
+        head.addWidget(self.sort_btn)
         head.addWidget(self.view_btn)
         cl.addLayout(head)
-        self.search = QLineEdit(placeholderText="Buscar canal…  (Ctrl+F)")
+        self.search = QLineEdit(placeholderText="Buscar canal ou programa…  (Ctrl+F)")
         self.search.setClearButtonEnabled(True)
         self._search_action = self.search.addAction(icon("search", "muted", 16),
                                                     QLineEdit.ActionPosition.LeadingPosition)
@@ -702,13 +717,54 @@ class MainWindow(QMainWindow):
         q = self.search.text().strip().lower()
         grp = self.group_box.currentText() if self.group_box.currentIndex() > 0 else None
         hide = self.hide_dead_cb.isChecked()
+        named = [c for c in self.all_channels if not q or q in c.name.lower() or q in c.group.lower()]
+        self.epg_hits = {}
+        if len(q) >= 3 and self.epg.has_data() and not src.is_vod_key(self.category):
+            found = {c.url for c in named}
+            self.epg_hits = self._epg_search(q, [c for c in self.all_channels if c.url not in found])
         self.visible = [c for c in self.all_channels
-                        if (not q or q in c.name.lower() or q in c.group.lower())
+                        if (not q or q in c.name.lower() or q in c.group.lower() or c.url in self.epg_hits)
                         and (not grp or c.group == grp)
                         and not (hide and self.status_of(c.url) == "dead")]
+        mode = self.cfg["sort_mode"]
+        if mode == "stable":
+            def rank(c):
+                s = self.health.score(c.url)
+                return (self.status_of(c.url) == "dead", -(0.5 if s is None else s))
+            self.visible.sort(key=rank)
+        elif mode == "name":
+            self.visible.sort(key=lambda c: fold(c.name))
         self.model.set_channels(self.visible)
         self._select_current_in_view()
         self._update_count()
+
+    def _epg_search(self, q, channels):
+        """Canais que estão passando ou vão passar (nas próximas 12 h) um programa com q no título."""
+        q, now, hits = fold(q), time.time(), {}
+        for c in channels:
+            for start, stop, title, _desc in self.epg.schedule(c):
+                if stop <= now:
+                    continue
+                if start > now + 12 * 3600:
+                    break
+                if q in fold(title):
+                    hits[c.url] = ("▶ " if start <= now else f"{hm(start)}  ") + title
+                    break
+        return hits
+
+    def _sort_menu(self):
+        m = QMenu(self)
+        for mode, label in (("list", "Ordem da lista"), ("stable", "Mais estáveis primeiro"), ("name", "Nome (A–Z)")):
+            a = m.addAction(label, lambda md=mode: self._set_sort(md))
+            a.setCheckable(True)
+            a.setChecked(self.cfg["sort_mode"] == mode)
+        m.exec(self.sort_btn.mapToGlobal(QPoint(0, self.sort_btn.height() + 4)))
+
+    def _set_sort(self, mode):
+        self.cfg["sort_mode"] = mode
+        self.sort_btn.setProperty("icon_color", "text" if mode == "list" else "accent")
+        set_btn_icon(self.sort_btn, "sort")
+        self._apply_filter()
 
     def _update_count(self):
         if self.downloader.running and not self.all_channels:
@@ -1434,6 +1490,7 @@ class MainWindow(QMainWindow):
             if st == vlc.State.Playing and (self.player.has_vout() or t > 800):
                 self.confirmed = True
                 self.fail_streak = 0
+                self.health.opened(self.current.url, now - self.started_at)
                 self.last_time, self.last_progress = t, now
                 self._mark(self.current.url, "ok")
                 self._remember_stream()
@@ -1460,6 +1517,7 @@ class MainWindow(QMainWindow):
         elif now - self.last_progress > STALL_TIMEOUT:
             if not self.retried:  # uma tentativa de reconexão antes de desistir
                 self.retried = True
+                self.health.stalled(self.current.url)
                 self._set_status("↻ Reconectando…", "warn")
                 self.player.stop()
                 self.player.play()
@@ -1471,6 +1529,10 @@ class MainWindow(QMainWindow):
     def _on_fail(self, reason):
         ch = self.current
         log.warning("Canal falhou: %s (%s)", ch.name, reason)
+        if self.confirmed:
+            self.health.stalled(ch.url)
+        else:
+            self.health.failed(ch.url)
         if not self.explore_btn.isChecked() and self._try_alternative(ch):
             return
         self._mark(ch.url, "dead")
@@ -2295,6 +2357,7 @@ class MainWindow(QMainWindow):
 
     def _on_auto_scan_result(self, url, ok):
         self.scan_progress.add(url)
+        self.health.probed(url, ok)
         if self.current and self.current.url == url:
             return
         self._auto_counts[0 if ok else 1] += 1
@@ -2332,6 +2395,7 @@ class MainWindow(QMainWindow):
         self.scanner.start(targets)
 
     def _on_scan_result(self, url, ok):
+        self.health.probed(url, ok)
         if self.current and self.current.url == url:
             return
         self._mark(url, "ok" if ok else "dead")
@@ -2727,6 +2791,7 @@ class MainWindow(QMainWindow):
     # ================================================================ encerramento
     def closeEvent(self, e):
         self._save_resume()
+        self.health.save(force=True)
         self.scanner.stop()
         self.auto_scanner.stop()
         self.scan_progress.save()

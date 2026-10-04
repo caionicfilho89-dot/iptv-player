@@ -29,6 +29,7 @@ DEFAULTS = {
     "timeshift": True, "timeshift_minutes": 30,
     "schedule": [],
     "resume": {},  # onde parou em filmes/episódios: {url: [segundos (-1 = assistido), duração, quando]}
+    "sort_mode": "list",  # list, stable (mais estáveis primeiro) ou name
     "tracks": {},  # áudio/legenda escolhidos por canal: {url: {"audio": nome, "spu": nome ou ""}}
     "remote": False, "remote_key": "",
     "auto_scan": True, "last_full_scan": 0, "merge_dupes": True,
