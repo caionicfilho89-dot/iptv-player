@@ -1,4 +1,6 @@
 """Ponto de entrada."""
+import logging
+import os
 import sys
 
 from PyQt6.QtWidgets import QApplication, QMessageBox
@@ -43,4 +45,7 @@ def main():
     w.showMaximized() if w.start_maximized else w.show()
     code = app.exec()
     log.info("Programa fechado")
-    sys.exit(code)
+    # tudo já foi salvo no closeEvent. Sair direto evita a finalização do Python com downloads em andamento
+    # (listas, guia): uma tarefa no meio de uma conexão HTTPS derrubava o programa ao fechar.
+    logging.shutdown()
+    os._exit(code)

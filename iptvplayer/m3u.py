@@ -116,6 +116,21 @@ def name_key(title):
     return re.sub(r"[^a-z0-9]", "", n)
 
 
+def keep_groups(text, groups):
+    """Só os canais destes grupos (group-title) de uma lista."""
+    out, keep = [], False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("#EXTINF"):
+            m = ATTR_RE.findall(line)
+            keep = dict(m).get("group-title", "").split(";")[0] in groups
+        if line.startswith("#EXTM3U") or keep or not line:
+            out.append(line)
+        if line and not line.startswith("#"):
+            keep = False
+    return "\n".join(out)
+
+
 def merge_m3u(texts, skip_urls=(), skip_names=()):
     """Junta listas numa só sem repetir canal (mesmo link ou mesmo nome).
     texts: [(texto, tira_numero, país)] — tira_numero remove o número do canal antes do nome ("126 Veja+");

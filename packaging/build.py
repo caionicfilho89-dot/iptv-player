@@ -99,6 +99,8 @@ def main():
          # vozes da dublagem: espeak-ng (DLL + dicionários) usado pelo Kokoro e pelo Piper
          "--collect-all", "espeakng_loader", "--collect-all", "piper", "--collect-data", "kokoro_onnx",
          "--collect-data", "phonemizer",
+         # lives do YouTube (iptvplayer/youtube.py importa o yt-dlp só na hora de abrir um canal)
+         "--hidden-import", "yt_dlp",
          # bibliotecas pesadas que só entrariam por importações opcionais (conversores de modelos etc.)
          *[a for m in ("torch", "torchvision", "torchaudio", "transformers", "tensorflow", "scipy", "pandas",
                        "sklearn", "matplotlib", "PIL", "botocore", "boto3", "grpc", "sympy", "IPython",

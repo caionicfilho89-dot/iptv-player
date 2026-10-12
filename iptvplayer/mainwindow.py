@@ -23,6 +23,7 @@ from . import APP_NAME, APP_VERSION, REPO
 from . import catchup
 from . import sources as src
 from . import xtream
+from . import youtube
 from .audio import AudioEngine
 from .dub import Dubber
 from .captions import CaptionWorker, SubtitleOverlay, missing_deps, video_rect_global
@@ -145,6 +146,10 @@ class MainWindow(QMainWindow):
         self.newch = NewChannels()   # canais que chegaram nas últimas atualizações
         self.explored = ExploredSet()
         self.stream = None           # (url, opções) realmente tocando; pode ser um link alternativo
+        self.yt = youtube.Resolver(self)  # lives do YouTube: o yt-dlp acha o vídeo, o VLC toca
+        self.yt.resolved.connect(self._yt_resolved)
+        self.yt.failed.connect(self._yt_failed)
+        self._yt_pending = None
         self._alt_tried = set()
         pos = self.cfg["explore_pos"]
         self.explore_cat, self.explore_idx = (pos[0], pos[1]) if len(pos) == 2 else (None, -1)
@@ -1099,6 +1104,11 @@ class MainWindow(QMainWindow):
         self.scan_btn.setToolTip("Desligado nas contas de operadora, para não arriscar bloqueio da conta" if paid
                                  else "Verifica em segundo plano quais canais desta lista estão no ar")
         self.all_channels = self._load_category(key)
+        if key == "youtube" and not self.scanner.running and self.all_channels:
+            # quem está ao vivo muda a toda hora: confere todos de novo (inclusive os marcados fora do ar)
+            self.scan_btn.setText("  Parar teste")
+            set_btn_icon(self.scan_btn, "stop")
+            self.scanner.start(list(self.all_channels))
         self.merged = 0
         if (self.cfg["merge_dupes"] and key not in src.SPECIAL_KEYS and not src.is_vod_key(key)
                 and not key.startswith(THEME_PREFIX)):
@@ -1128,7 +1138,7 @@ class MainWindow(QMainWindow):
             found = {c.url for c in named}
             self.epg_hits = self._epg_search(q, [c for c in self.all_channels if c.url not in found])
         # nos serviços grátis e nos temas só aparece o que funciona
-        hide = hide or self.category in src.FAST_KEYS or (self.category or "").startswith(THEME_PREFIX)
+        hide = hide or self.category in src.LIVE_ONLY_KEYS or (self.category or "").startswith(THEME_PREFIX)
         self.visible = [c for c in self.all_channels
                         if (not q or q in c.name.lower() or q in c.group.lower() or c.url in self.epg_hits)
                         and (not grp or c.group == grp)
@@ -1663,6 +1673,13 @@ class MainWindow(QMainWindow):
         self._ts_origin = 0.0
         self._paused_at = None
         self._ts_buttons()
+        self._yt_pending = None
+        if youtube.is_youtube(stream[0]):
+            self._ts_sid = None
+            self.timeshift.close()
+            self._yt_pending = stream[0]
+            self.yt.start(stream[0])
+            return
         if self.cfg["timeshift"] and timeshift_supports(stream[0]):
             sid = self._ts_sid = self.timeshift.open(stream[0], stream[1])
             QTimer.singleShot(START_WAIT_MS, lambda: self._ts_too_slow(sid))
@@ -1670,6 +1687,16 @@ class MainWindow(QMainWindow):
             self._ts_sid = None
             self.timeshift.close()
             self._set_media(stream[0], stream[1])
+
+    def _yt_resolved(self, url, video):
+        if self._yt_pending == url and self.stream and self.stream[0] == url:
+            self._yt_pending = None
+            self._set_media(video, self.stream[1])
+
+    def _yt_failed(self, url, reason):
+        if self._yt_pending == url and self.stream and self.stream[0] == url and self.current:
+            self._yt_pending = None
+            self._on_fail(reason)
 
     def _set_media(self, url, opts):
         media = self.instance.media_new(url)

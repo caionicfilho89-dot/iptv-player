@@ -10,10 +10,11 @@ from PyQt6.QtCore import QObject, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
-from . import xtream
+from . import xtream, youtube
 from .discovery import list_urls
 from .log import log
-from .m3u import merge_m3u, name_key, parse_m3u
+from .sources import SOURCE_GROUPS
+from .m3u import keep_groups, merge_m3u, name_key, parse_m3u
 from .paths import LIST_CACHE, LOGO_CACHE
 from .themes import country_from_source
 
@@ -114,6 +115,7 @@ class Scanner(QObject):
         self.running = False
         self.cancelled = False  # parado com stop(): finished é emitido, mas a rodada não terminou
         self.replies = []
+        self.pages = {}         # url do YouTube -> página lida até agora (procura a marca de "ao vivo")
         if max_active:
             self.MAX_ACTIVE = max_active
 
@@ -149,12 +151,21 @@ class Scanner(QObject):
             self.result.emit(url, ok)
 
     def _ready(self, reply, url):
+        if youtube.is_youtube(url):
+            # a página do canal sempre responde; ao vivo só se tiver a marca
+            page = self.pages[url] = self.pages.get(url, b"") + bytes(reply.readAll())
+            if youtube.LIVE_MARK in page or len(page) > 4_000_000:
+                self._decide(url, youtube.LIVE_MARK in page)
+                reply.abort()
+            return
         if http_ok(reply):
             self._decide(url, True)
             reply.abort()  # streams contínuos nunca terminam; basta o primeiro byte
 
     def _done(self, reply, url):
         ok = reply.error() == QNetworkReply.NetworkError.NoError and http_ok(reply)
+        if youtube.is_youtube(url):
+            ok = youtube.LIVE_MARK in self.pages.pop(url, b"")
         if self.running or url in self.decided:
             self._decide(url, ok)
         self.replies.remove(reply)
@@ -277,7 +288,11 @@ class ListDownloader(QObject):
                 _save_backups(texts, skip_urls, skip_names)
                 parts += [(t, False, country_from_source(name)) for name, t in texts]
             else:
-                parts.append((raw.decode("utf-8", "replace"), "apsattv.com" in url, country_from_source(url)))
+                text = raw.decode("utf-8", "replace")
+                groups = next((g for host, g in SOURCE_GROUPS.items() if host in url), None)
+                if groups:
+                    text = keep_groups(text, groups)
+                parts.append((text, "apsattv.com" in url, country_from_source(url)))
             time.sleep(0.3)
         if missing and dest.exists():
             data = b""  # fica com a cópia completa de antes

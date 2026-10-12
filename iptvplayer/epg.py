@@ -1,6 +1,7 @@
 """Guia de programação (XMLTV), baixado e lido em segundo plano."""
 import calendar
 import gzip
+import lzma
 import hashlib
 import re
 import threading
@@ -133,8 +134,13 @@ class EpgManager(QObject):
     @staticmethod
     def _parse(path, g, now):
         with open(path, "rb") as f:
-            gz = f.read(2) == b"\x1f\x8b"
-        stream = gzip.open(path) if gz else open(path, "rb")
+            magic = f.read(6)
+        if magic[:2] == b"\x1f\x8b":
+            stream = gzip.open(path)
+        elif magic == b"\xfd7zXZ\x00":  # .xz (guia da M3UPT)
+            stream = lzma.open(path)
+        else:
+            stream = open(path, "rb")
         with stream:
             for _, el in ET.iterparse(stream):
                 if el.tag == "channel":

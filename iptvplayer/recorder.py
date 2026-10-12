@@ -5,6 +5,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QStandardPaths
 
+from . import youtube
 from .vlcload import vlc
 
 
@@ -45,7 +46,7 @@ class Recorder:
     def start(self, ch):
         self.stop()
         self.path = _user_dir("videos") / f"{safe_name(ch.name)}_{time.strftime('%Y-%m-%d_%H-%M-%S')}.ts"
-        media = self.instance.media_new(ch.url)
+        media = self.instance.media_new(youtube.playable(ch.url))
         for o in ch.opts:
             media.add_option(o)
         dst = self.path.as_posix().replace('"', "")

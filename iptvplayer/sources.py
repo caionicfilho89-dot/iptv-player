@@ -11,6 +11,11 @@ SPECIAL_KEYS = (FAV_KEY, RECENT_KEY, NEW_KEY)
 CUSTOM_PREFIX = "custom:"
 
 FREE_TV = "https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8"
+# M3UPT: canais e rádios portugueses, só transmissões públicas e oficiais
+M3UPT = ("https://m3upt.com/iptv",)
+M3UPT_EPG = "https://raw.githubusercontent.com/LITUATUI/M3UPT/main/EPG/epg-m3upt.xml.xz"
+# listas que misturam ao vivo com episódios gravados e câmeras: só estes grupos entram (domínio -> grupos)
+SOURCE_GROUPS = {"m3upt.com": {"TV", "Rádios"}}
 # repositório inteiro do iptv-org num pacote só (~1 MB): traz os canais que ainda não entraram na lista geral
 IPTV_ORG_REPO = ("https://codeload.github.com/iptv-org/iptv/tar.gz/refs/heads/master",)
 
@@ -19,8 +24,10 @@ BUILTIN = [
     ("melhor_iptv", "Todos (melhores)", "tv", None),
     ("todos", "Todos os canais", "globe", "index.m3u"),
     ("extras", "Mais canais", "plus", IPTV_ORG_REPO),
+    ("youtube", "YouTube ao vivo", "live", None),  # youtube.m3u: lives oficiais conferidas à mão
     ("brasil", "Brasil", "flag", "countries/br.m3u"),
     ("portugal", "Portugal", "flag", "countries/pt.m3u"),
+    ("m3upt", "Portugal e rádios (M3UPT)", "flag", M3UPT),
     ("português", "Português", "chat", "languages/por.m3u"),
     ("filmes", "Filmes", "film", "categories/movies.m3u"),
     ("series", "Séries", "layers", "categories/series.m3u"),
@@ -81,13 +88,15 @@ FAST = [
 ]
 BUILTIN += [(k, label, ic, remote) for k, label, ic, remote, _epg in FAST]
 FAST_KEYS = {f[0] for f in FAST}
+LIVE_ONLY_KEYS = FAST_KEYS | {"youtube"}  # só aparece o que está no ar (o resto some da lista)
 FAST_EPG = {f[0]: list(f[4]) for f in FAST}
+FAST_EPG["m3upt"] = [M3UPT_EPG]  # a lista é juntada (perde o url-tvg do cabeçalho)
 BUILTIN_KEYS = {b[0] for b in BUILTIN}
 
 # organização do menu lateral: cada seção com as categorias que pertencem a ela, em ordem
 NAV_GROUPS = [
-    ("Destaques", ["melhor_iptv", "todos", "extras"]),
-    ("Países", ["brasil", "portugal", "português"]),
+    ("Destaques", ["melhor_iptv", "todos", "extras", "youtube"]),
+    ("Países", ["brasil", "portugal", "m3upt", "português"]),
     ("Categorias", ["filmes", "series", "esportes", "notícias", "documentários",
                     "música", "infantil", "religiosos", "gerais"]),
     ("Idiomas", ["english", "español"]),

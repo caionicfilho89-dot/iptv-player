@@ -1,0 +1,98 @@
+#EXTM3U
+# Lives oficiais no YouTube (conferidas à mão). O PudimFlix abre com o yt-dlp; só aparecem quando estão ao vivo.
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/TUNo33rJfSv06L2UyQWsOPUMJglHptsHR2mFZOshcXL45xRJ1YgpRZWpb76IChbSBwyG1TBUvA=s900-c-k-c0x00ffffff-no-rj" group-title="Notícias",CNN Brasil
+https://www.youtube.com/@CNNbrasil/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/ceWsIRiUn75sLwoPwHZgsIzwmjBJd_SzaHkyS3h1pXZ3hDQ6orkYvm8UL66yaF7SQdRpGHZGWQ=s900-c-k-c0x00ffffff-no-rj" group-title="Notícias",Jovem Pan News
+https://www.youtube.com/@jovempannews/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/qqad5hNhAtWZblXQwSFFki_sqD0xied7pUw3con6MAsAenTbt0ZF6r0lqP3BCl8ZWQw_PyyOKA=s900-c-k-c0x00ffffff-no-rj" group-title="Notícias",Band Jornalismo
+https://www.youtube.com/@BandJornalismo/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/HCLS0suaZ1ZqXvIzGsxElF0RKkonHsd7LqMsgJOoJhtHcrj2sS61NYSciv7okzmIQ5Fj9gRyZA=s900-c-k-c0x00ffffff-no-rj" group-title="Notícias",Record News
+https://www.youtube.com/@RecordNews/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/3_uPF3ufjORBgR9Ii_4XoSw92CeIWI2FabiuH-kXT321ykNrWC0bmpdsmm7bdzlynDiX3Qx2ZQ=s900-c-k-c0x00ffffff-no-rj" group-title="Notícias",SBT News
+https://www.youtube.com/@SBTNews/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/vBqpMPMUqgJpTZwsvw-Tsmw-GyXH0zqeFUODILDYX_XaSihoNqvM3QXFrpvujuAqB1ZFlTvr=s900-c-k-c0x00ffffff-no-rj" group-title="Notícias",Times Brasil
+https://www.youtube.com/@timesbrasil/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/TILkzkTsAqjIG6AhIa91dsxVWviO4MrSVuZ5h5PBqIlm2wxI74uEn1iVpWY516qgvP8NGPxzsQ=s900-c-k-c0x00ffffff-no-rj" group-title="Notícias",InfoMoney
+https://www.youtube.com/@InfoMoney/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/Vhwx_jeJ8atiyrct6MANpCOVyI-4GEEtFSagNiaog9H2F9HhDowXMD5hUuEEzgc7oQCDRhRs4g=s900-c-k-c0x00ffffff-no-rj" group-title="Notícias",Poder360
+https://www.youtube.com/@Poder360/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/dadwqkT3WM7VFPtTSOfacJmMynJsDTj5EfX6uDL0USiae1ZCzePFidLi4J_tTCQFALPefY11Oxk=s900-c-k-c0x00ffffff-no-rj" group-title="Notícias",Estadão
+https://www.youtube.com/@estadao/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/ukOUdTx4uhpLFu-xVSb2XIxRW22eljzVyEG-4X010tgxuQR9I8LvA1bzO-s6NlOUj6Z9FRPHWs8=s900-c-k-c0x00ffffff-no-rj" group-title="Notícias",UOL
+https://www.youtube.com/@UOL/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/x4z0ZuhvPPSrUqYhWIpwhAEbtVL1oTXwG52AYl-ju9Qhs7fLY2qbU-EzH7YA6Xkxl0Nk7td5=s900-c-k-c0x00ffffff-no-rj" group-title="Notícias",Canal Gov
+https://www.youtube.com/@canalgov/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/ytc/AIdro_lQZn1Gu7JCyHIkh8iqtsXC94DbwOpY0K1IOqsNPD5En4I=s900-c-k-c0x00ffffff-no-rj" group-title="Notícias",Jornalismo TV Cultura
+https://www.youtube.com/@jornalismotvcultura/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/gTCOW5AN0x8aynnmFEvMkAsBLs2xgPF2-DV1-TSYxifANp1Y95hIbmTjY7SVdWFEQLIBGj7jYQ=s900-c-k-c0x00ffffff-no-rj" group-title="Notícias",Climatempo
+https://www.youtube.com/@climatempo/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/iVAmyh_VO7bzOOiR-kZL_uWLdX1cb5UJ8Pe1l1OCRiIvcT4GaYYg3_lz-fsSEn367kDILwtlig=s900-c-k-c0x00ffffff-no-rj" group-title="Legislativo",TV Senado (YouTube)
+https://www.youtube.com/@tvsenado/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/mRRHvqtinxHROaGItfNjGkjFjZebfTkg4BhTt4cbY60thJhFGSGuSL1PcNIc7UWU8MqCZdddZA=s900-c-k-c0x00ffffff-no-rj" group-title="Legislativo",TV Câmara (YouTube)
+https://www.youtube.com/@CamaraDosDeputadosOficial/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/p3_hpDp2rzqyL8_q_KCAEcqkJOdUJX10XD5g3oEoN9Z9ED9dbUS50KQp9p0sJH3jaH4biGWQmKA=s900-c-k-c0x00ffffff-no-rj" group-title="Legislativo",STF ao vivo
+https://www.youtube.com/@STF_oficial/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/N2Gr3UZpy0YoZlkgvpBCLA1eOVPvl6E08TMp6e3UDizadMHjxuw0RfkTKwy2Yw67fJqXKOz_=s900-c-k-c0x00ffffff-no-rj" group-title="Legislativo",TV Alesp
+https://www.youtube.com/@AlespOficial/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/ytc/AIdro_m6Kd4PAuPqKniofwiooa0VyOc9uaNCy9jVqgIfGkbbvpg=s900-c-k-c0x00ffffff-no-rj" group-title="Legislativo",TV Assembleia MG
+https://www.youtube.com/@AssembleiaMG/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/FVzHJfhY6HkavCqSGkvHAMrvvccyZgRRjL7w3AitWJrE9dm4uKD6iL_ZHvjr83dueK4wxVyX=s900-c-k-c0x00ffffff-no-rj" group-title="Legislativo",TV Alba
+https://www.youtube.com/@TVALBA/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/fLnncXtb7ibtW4aleS9Cj4I2oakWXXn8GeAAfBGIA3N4u0Ug2uGtM9fGutmUcCPGzFa24aZwsHs=s900-c-k-c0x00ffffff-no-rj" group-title="Legislativo",TV Alego
+https://www.youtube.com/@alegooficial/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/vUaFvTYgEV4KCQlcURn_zb7G1Js5ul9dXFatiPN-0sJVAYb52_nyGlXzuloVQ8VWy-Hm97dk7w=s900-c-k-c0x00ffffff-no-rj" group-title="Variedades",TV Brasil
+https://www.youtube.com/@TVBrasil/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/qYagKsPfABygo6iadsT5w03ix8jqNd7Q8taB9TsvyEcvsSz5fg9WmTKBdgtW49bL6jEq-BjX1g=s900-c-k-c0x00ffffff-no-rj" group-title="Variedades",TV Cultura
+https://www.youtube.com/@tvcultura/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/CTFU2P7tW43punwV3olirWyw_I5tKS1YzMe6JfeBmWw09ipCy_6GW2uE9EjX8T63pgLIsiJdBpA=s900-c-k-c0x00ffffff-no-rj" group-title="Variedades",RedeTV!
+https://www.youtube.com/@RedeTV/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/Zm3t3pgNIYY1HgkWYaWmU3E--oljMiWqX_2Ig4zkxziTkP3VOR9TGUmgJAPu7XrhP06ebxDg=s900-c-k-c0x00ffffff-no-rj" group-title="Esportes",CazéTV
+https://www.youtube.com/@CazeTV/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/ytc/AIdro_njv5bj96nXZPdVSGWFsAya7ecRhM4u_78FX5cOyq1Aefxs0LYhy-CVDYRCpSNnYeaQwA=s900-c-k-c0x00ffffff-no-rj" group-title="Esportes",Canal GOAT
+https://www.youtube.com/@canalgoat/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/VQ2IGEcrhMSpuFb3RFDQOsVV9xI0shwQVorL8VLUGUGaV61Va1UMo4iwFOBVfOsrwTTYET22Hdk=s900-c-k-c0x00ffffff-no-rj" group-title="Esportes",TNT Sports Brasil
+https://www.youtube.com/@TNTSportsBR/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/ivecqYD8VCxv432H9vDhzLPeJgorSXGs7dke0o6ku2PCqyQFQzBZnW4qizS6UFIg7ICej995DQ=s900-c-k-c0x00ffffff-no-rj" group-title="Esportes",Paulistão
+https://www.youtube.com/@Paulistao/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/tt9WaJh3uawWJUv4upgjMNJgirABgKgaionIiPMTor-5rL5EnszV6sL8KDLOwXmqUZmKfnlu=s900-c-k-c0x00ffffff-no-rj" group-title="Esportes",N Sports
+https://www.youtube.com/@nsports/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/NGqUy8VulNmyLJaFv1O3KkeT_d9iswymNDdwZGlN7vxD_8Ov6wr3pgwrUoAW5Z8C8dfgArvg=s900-c-k-c0x00ffffff-no-rj" group-title="Religiosos",TV Aparecida
+https://www.youtube.com/@TVAparecida/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/57iHbMmPb0hkCV6EZgkQcrVteNhzLlzgfjwYzs4DQaSkqBKlTsROL5bwEWXUNaKCFMHHlG5P=s900-c-k-c0x00ffffff-no-rj" group-title="Religiosos",Canção Nova
+https://www.youtube.com/@cancaonova/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/7pxacWyDWrc0dQ-TudEoMmazfk_Aj8Zto3i9a1m_LeVFkXx0EgVKkyUgcZdeml_Om0iifDeF=s900-c-k-c0x00ffffff-no-rj" group-title="Religiosos",Rede Século 21
+https://www.youtube.com/@redeseculo21/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/PYn2v6l25pYcYz_v6m1doJxi6h0I-vjoAu1qt7BF_EtjwE1qr-n5ewZ4f7TA3WxVgRzfxW2imA=s900-c-k-c0x00ffffff-no-rj" group-title="Infantil",Turma da Mônica
+https://www.youtube.com/@TurmadaMonica/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/8x1w-A0ritsPGhO7WfMAyA4OIDAGUpmD3fMS_XVQyYtTnWXwHnAQQTafE0S76Bl65HBo6SNj=s900-c-k-c0x00ffffff-no-rj" group-title="Infantil",Galinha Pintadinha
+https://www.youtube.com/@galinhapintadinha/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/Qd8PGHDiRoKIRiO0biUJBDmCsTl4RMac4DIJoCaJBlyTwc2DbTeutHCfJkoDT3WLipXHgeAMmYw=s900-c-k-c0x00ffffff-no-rj" group-title="Infantil",Mundo Bita
+https://www.youtube.com/@mundobita/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/o5afJU4Yg-MjBHV21hnbsdFYcE8A3ymUL8xHDfJJ5PWLNj0Cu1S7Drw-N-ji4B78V0ouLoFjag=s900-c-k-c0x00ffffff-no-rj" group-title="Infantil",Patati Patatá
+https://www.youtube.com/@patatipatata/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/BxWJF5-pjKVyh9n3BeulWPpbJZuo5Aa4o4zjE9yfZKPcL5r9oEvCVqiS7O6ihV32ciKHTyqnKA=s900-c-k-c0x00ffffff-no-rj" group-title="Infantil",Luccas Toon
+https://www.youtube.com/@LuccasToon/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/jD6MtmK3Fj_fqHKV1E9bNhLXzP6l4M-K9AnYFHLM21_i7w5ULtPlYXlZLsIx3op3csBKU3v6=s900-c-k-c0x00ffffff-no-rj" group-title="Infantil",Bob Zoom
+https://www.youtube.com/@BobZoom/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/b7jlgjW1GAaZsO05pA-z5H9Q79c0mMqAYZafAKaFoQ8B3I0YUNxQIPoFZbRHslqOdjagt1MRpQ=s900-c-k-c0x00ffffff-no-rj" group-title="Infantil",Palavra Cantada Oficial
+https://www.youtube.com/@palavracantada/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/ytc/AIdro_lj2RqdHTk9FlVitAoS20xudIv-jENexsYpD11FWeHZlek=s900-c-k-c0x00ffffff-no-rj" group-title="Educação",UnBTV
+https://www.youtube.com/@unbtv/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/ZSGxHxILC1pK9AEwtwRArVlNJ7kOAbVqP4VLNeV8TV4gbLiCd8OO616pDzoxK5Qnh0ITSBJbTHQ=s900-c-k-c0x00ffffff-no-rj" group-title="Educação",TV UFMG
+https://www.youtube.com/@TVUFMG/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/w-PplslLaCFe1cZ_3U7B022m5MC1fPgUCl7rYYVcokc7w3AlK8Crkm3DxXX00H69evOiWmMDw0U=s900-c-k-c0x00ffffff-no-rj" group-title="Educação",TV Unesp
+https://www.youtube.com/@tvunesp/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/ytc/AIdro_k2l0LbNyqTitrPcifcZx8L7Lo32RMR0Dyv2xya7InrLVI=s900-c-k-c0x00ffffff-no-rj" group-title="Educação",Univesp TV
+https://www.youtube.com/@univesptv/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/ytc/AIdro_l6CIXwW-cM9upVmXVzoiRhhRccfMLRHm4tMG0s093OwG8=s900-c-k-c0x00ffffff-no-rj" group-title="Educação",TV USP
+https://www.youtube.com/@tvusp/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/gjJOvOKNC5En75BX9Z4mbaY_4LjudHwDYJUaKwXnL17wcia6LnvD33yjSJGax-TTn9vHylfSyr0=s900-c-k-c0x00ffffff-no-rj" group-title="Educação",Canal USP
+https://www.youtube.com/@canalusp/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/3B05WqW7DRkr0OVmIvS9KfMSN9yGZAM5L0N6_iIBNOoCnbv8Vk9MNcesPM1t9CVotFjtAwLycA=s900-c-k-c0x00ffffff-no-rj" group-title="Agro",Canal Rural 
+https://www.youtube.com/@canalrural/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/ZFyBrGAfEZn4kkLaHgLA998OlM-f56cDA6FO1dxniFBsE9IIZL8OkcBDEvIwzQojlyhowi6v=s900-c-k-c0x00ffffff-no-rj" group-title="Agro",AgroMais
+https://www.youtube.com/@agromaistv/live
+#EXTINF:-1 tvg-country="BR" tvg-logo="https://yt3.googleusercontent.com/dbW0HFggTmxzaecuL9Gp289kD8gVIAt4qODMgzcVk89zyoKKXpytYnUIS0QHR4hoeXOradU1=s900-c-k-c0x00ffffff-no-rj" group-title="Música",Massa FM
+https://www.youtube.com/@massafm/live
+#EXTINF:-1 tvg-logo="https://yt3.googleusercontent.com/IcZW-YBFLCGKQ7BvC8yevab9YAG1SmkEwCd80kcYrhwb0dH39Trfp3DMsI5ZJCsp9wTE60OH428=s900-c-k-c0x00ffffff-no-rj" group-title="Música",Lofi Girl
+https://www.youtube.com/@LofiGirl/live

@@ -4,6 +4,7 @@ import time
 from PyQt6.QtCore import QTimer, pyqtSignal
 from PyQt6.QtWidgets import QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
+from . import youtube
 from .theme import T, app_icon
 from .vlcload import vlc
 from .theme import icon
@@ -62,7 +63,7 @@ class MosaicTile(QFrame):
     def play(self, ch):
         self.ch = ch
         self.title.setText(ch.name)
-        media = self.instance.media_new(ch.url)
+        media = self.instance.media_new(youtube.playable(ch.url))
         for o in ch.opts:
             media.add_option(o)
         self.player.set_media(media)

@@ -32,6 +32,12 @@ def run():
         return f"VLC {vlc.libvlc_get_version().decode()}" if inst else "sem VLC"
     results.append(_check("VLC", vlc_ok))
 
+    def youtube_ok():
+        import yt_dlp
+        from yt_dlp.extractor.youtube import YoutubeIE  # o extrator precisa ter vindo junto no programa
+        return f"yt-dlp {yt_dlp.version.__version__} ({YoutubeIE.IE_NAME})"
+    results.append(_check("Lives do YouTube", youtube_ok))
+
     def ia_legendas():
         missing = captions.missing_deps()
         if missing:
