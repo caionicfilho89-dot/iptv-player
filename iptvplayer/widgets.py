@@ -88,6 +88,23 @@ class ChannelModel(QAbstractListModel):
 
 
 # ----------------------------------------------------------------------------- desenho dos canais
+_dark_cache = {}
+
+
+def _is_dark(url, pm):
+    """Logo quase todo preto (A&E, AMC…): some no fundo escuro, então ganha fundo claro."""
+    v = _dark_cache.get(url)
+    if v is None:
+        img = pm.toImage().scaled(16, 16)
+        lum = n = 0
+        for y in range(img.height()):
+            for x in range(img.width()):
+                c = img.pixelColor(x, y)
+                if c.alpha() > 100:
+                    lum += 0.3 * c.red() + 0.59 * c.green() + 0.11 * c.blue()
+                    n += 1
+        v = _dark_cache[url] = n > 20 and lum / n < 55
+    return v
 class _BaseDelegate(QStyledItemDelegate):
     def __init__(self, win):
         super().__init__(win)
@@ -101,8 +118,9 @@ class _BaseDelegate(QStyledItemDelegate):
     def _logo(self, p, box, ch, font):
         bg = QPainterPath()
         bg.addRoundedRect(box.toRectF(), 7, 7)
-        p.fillPath(bg, QColor(T["logo_bg"]))
         pm = self.win.logos.get(ch.logo)
+        dark_logo = pm is not None and T["mode"] == "dark" and _is_dark(ch.logo, pm)
+        p.fillPath(bg, QColor("#d9dde6" if dark_logo else T["logo_bg"]))
         if pm:
             s = pm.size().scaled(box.size().shrunkBy(QMargins(5, 5, 5, 5)), Qt.AspectRatioMode.KeepAspectRatio)
             p.drawPixmap(QRect(box.center().x() - s.width() // 2 + 1, box.center().y() - s.height() // 2 + 1,
@@ -290,6 +308,72 @@ class GridDelegate(_BaseDelegate):
         p.drawText(sub_rect, Qt.AlignmentFlag.AlignVCenter,
                    p.fontMetrics().elidedText(sub, Qt.TextElideMode.ElideRight, sub_rect.width()))
         p.restore()
+
+
+class CardDelegate(_BaseDelegate):
+    """Cartão grande das fileiras da tela Início: logo em destaque, nome e o que está passando agora."""
+    CARD = QSize(208, 176)
+
+    def sizeHint(self, option, index):
+        return self.CARD
+
+    def paint(self, p, option, index):
+        ch = index.data(Qt.ItemDataRole.UserRole)
+        if ch is None:
+            return
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = option.rect.adjusted(6, 6, -6, -6)
+        _selected, hover, playing = self._state(option, ch)
+        thumb = QRect(r.left(), r.top(), r.width(), 112)
+        path = QPainterPath()
+        path.addRoundedRect(thumb.toRectF(), 12, 12)
+        p.fillPath(path, QColor(T["surface2"] if hover else T["surface"]))
+        self._logo(p, thumb.adjusted(22, 14, -22, -14), ch, option.font)
+        if hover or playing:
+            pen = QColor(T["accent"])
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+        if playing:
+            self._new_badge_text(p, thumb.left() + 8, thumb.top() + 8, option.font, "AO VIVO")
+        elif self.win.is_new(ch.url):
+            self._new_badge(p, thumb.left() + 8, thumb.top() + 8, option.font)
+        if self.win.is_fav(ch.url):
+            p.drawPixmap(QRect(thumb.right() - 24, thumb.top() + 8, 16, 16),
+                         icon("star_fill", "star", 16).pixmap(16, 16))
+        self._signal(p, thumb.right() - 20, thumb.bottom() - 18, ch)
+
+        name_rect = QRect(r.left() + 2, thumb.bottom() + 8, r.width() - 4, 20)
+        f = QFont(option.font)
+        f.setPointSizeF(10)
+        f.setWeight(QFont.Weight.DemiBold)
+        p.setFont(f)
+        p.setPen(QColor(T["strong"] if hover or playing else T["text"]))
+        p.drawText(name_rect, Qt.AlignmentFlag.AlignVCenter,
+                   p.fontMetrics().elidedText(ch.name, Qt.TextElideMode.ElideRight, name_rect.width()))
+        sub, color = self._subtitle(ch)
+        f2 = QFont(option.font)
+        f2.setPointSizeF(8.5)
+        p.setFont(f2)
+        p.setPen(QColor(color))
+        sub_rect = QRect(r.left() + 2, name_rect.bottom() + 1, r.width() - 4, 16)
+        p.drawText(sub_rect, Qt.AlignmentFlag.AlignVCenter,
+                   p.fontMetrics().elidedText(sub, Qt.TextElideMode.ElideRight, sub_rect.width()))
+        p.restore()
+
+    def _new_badge_text(self, p, x, y, font, text):
+        f = QFont(font)
+        f.setPointSizeF(7)
+        f.setBold(True)
+        p.setFont(f)
+        w = p.fontMetrics().horizontalAdvance(text) + 12
+        rect = QRect(x, y, w, 16)
+        path = QPainterPath()
+        path.addRoundedRect(rect.toRectF(), 8, 8)
+        p.fillPath(path, QColor(T["bad"]))
+        p.setPen(QColor("white"))
+        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
 
 
 # ----------------------------------------------------------------------------- vídeo

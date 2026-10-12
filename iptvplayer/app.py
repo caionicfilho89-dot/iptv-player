@@ -36,7 +36,7 @@ def main():
     app.setStyleSheet(build_style())
     if vlc is None:
         log.error("VLC não encontrado")
-        QMessageBox.critical(None, "IPTV Player", VLC_MISSING_MSG)
+        QMessageBox.critical(None, "PudimFlix", VLC_MISSING_MSG)
         sys.exit(1)
     from .mainwindow import MainWindow
     w = MainWindow(cfg)

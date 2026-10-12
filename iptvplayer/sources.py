@@ -11,11 +11,14 @@ SPECIAL_KEYS = (FAV_KEY, RECENT_KEY, NEW_KEY)
 CUSTOM_PREFIX = "custom:"
 
 FREE_TV = "https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8"
+# repositório inteiro do iptv-org num pacote só (~1 MB): traz os canais que ainda não entraram na lista geral
+IPTV_ORG_REPO = ("https://codeload.github.com/iptv-org/iptv/tar.gz/refs/heads/master",)
 
 # chave (= nome do .m3u), rótulo, ícone, caminho no iptv-org ou URL completa (None = só local)
 BUILTIN = [
     ("melhor_iptv", "Todos (melhores)", "tv", None),
     ("todos", "Todos os canais", "globe", "index.m3u"),
+    ("extras", "Mais canais", "plus", IPTV_ORG_REPO),
     ("brasil", "Brasil", "flag", "countries/br.m3u"),
     ("portugal", "Portugal", "flag", "countries/pt.m3u"),
     ("português", "Português", "chat", "languages/por.m3u"),
@@ -36,6 +39,8 @@ BUILTIN = [
 # por serviço (trazem canais que ainda não entraram na lista geral)
 IPTV_ORG_STREAMS = "https://raw.githubusercontent.com/iptv-org/iptv/master/streams/"
 MJH = "https://i.mjh.nz/"
+APSAT = "https://www.apsattv.com/"  # listas dos canais grátis das TVs (LG, Vizio, TCL…)
+FAST_GEN = "https://raw.githubusercontent.com/BuddyChewChew/app-m3u-generator/main/playlists/"
 
 
 def _streams(*names):
@@ -46,20 +51,32 @@ _PLUTO = ("mx", "us", "ca", "uk", "es", "fr", "it", "de", "at", "ch", "dk", "no"
 _SAMSUNG = ("br", "pt", "us", "mx", "ca", "uk", "ie", "es", "fr", "it", "de", "at", "ch", "be", "nl", "lu", "dk",
             "no", "se", "fi", "in", "au", "nz")
 _RAKUTEN = ("es", "uk", "fr", "it", "de", "fi", "pl")
+# LG Channels por país (Brasil primeiro); só os países que trazem canais que as outras listas não têm
+_LG = ("br", "pt", "mx", "ar", "es", "us", "gb", "ca", "fr", "de", "it", "au", "in", "jp", "kr", "nl", "se",
+       "ie", "nz", "pl", "be", "at", "ch")
+
+
+def _aps(*names):
+    return tuple(APSAT + n + ".m3u" for n in names)
 # chave, rótulo, ícone, listas, guias de programação
 FAST = [
     ("pluto", "Pluto TV", "tv", _streams("br_pluto", *(c + "_pluto" for c in _PLUTO)),
      (MJH + "PlutoTV/br.xml.gz", MJH + "PlutoTV/us.xml.gz")),  # Brasil + mundo numa lista só (BR primeiro)
-    ("samsung", "Samsung TV Plus", "tv", _streams(*(c + "_samsung" for c in _SAMSUNG)),
+    ("samsung", "Samsung TV Plus", "tv", _aps("ssungbra") + _streams(*(c + "_samsung" for c in _SAMSUNG))
+     + (FAST_GEN + "samsungtvplus_all.m3u",),
      (MJH + "SamsungTVPlus/us.xml.gz",)),
     ("rakuten", "Rakuten TV", "tv", _streams(*(c + "_rakuten" for c in _RAKUTEN)), ()),
     ("plex", "Plex", "tv", _streams("us_plex"), (MJH + "Plex/us.xml.gz",)),
-    ("roku", "The Roku Channel", "tv", _streams("us_roku"), (MJH + "Roku/all.xml.gz",)),
-    ("tubi", "Tubi", "tv", _streams("us_tubi"), ()),
-    ("xumo", "Xumo Play", "tv", _streams("us_xumo"), ()),
+    ("lg", "LG Channels", "tv", _aps(*(c + "lg" for c in _LG)), ()),
+    ("roku", "The Roku Channel", "tv", _streams("us_roku") + (FAST_GEN + "roku_all.m3u",),
+     (MJH + "Roku/all.xml.gz",)),
+    ("tubi", "Tubi", "tv", _streams("us_tubi") + (FAST_GEN + "tubi_all.m3u",), ()),
+    ("localnow", "Local Now", "tv", _aps("localnow"), ()),
+    ("xumo", "Xumo Play", "tv", _streams("us_xumo") + _aps("xumo"), ()),
     ("stirr", "Stirr", "tv", _streams("us_stirr"), ()),
-    ("vizio", "Vizio WatchFree+", "tv", _streams("us_vizio"), ()),
-    ("tcl", "TCL tv+", "tv", _streams("us_tcl"), ()),
+    ("vizio", "Vizio WatchFree+", "tv", _streams("us_vizio") + _aps("vizio"), ()),
+    ("tcl", "TCL tv+", "tv", _streams("us_tcl") + _aps("tcl", "tclplus"), ()),
+    ("frndly", "Frndly TV", "tv", _aps("frndlytv"), ()),
     ("distro", "Distro TV", "tv", _streams("us_distro", "uk_distro", "in_distro"), ()),
 ]
 BUILTIN += [(k, label, ic, remote) for k, label, ic, remote, _epg in FAST]
@@ -69,7 +86,7 @@ BUILTIN_KEYS = {b[0] for b in BUILTIN}
 
 # organização do menu lateral: cada seção com as categorias que pertencem a ela, em ordem
 NAV_GROUPS = [
-    ("Destaques", ["melhor_iptv", "todos"]),
+    ("Destaques", ["melhor_iptv", "todos", "extras"]),
     ("Países", ["brasil", "portugal", "português"]),
     ("Categorias", ["filmes", "series", "esportes", "notícias", "documentários",
                     "música", "infantil", "religiosos", "gerais"]),

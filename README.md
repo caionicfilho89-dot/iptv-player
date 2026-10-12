@@ -1,8 +1,10 @@
-# 📺 IPTV Player
+# 🍮 PudimFlix
 
-Player de IPTV para Windows com visual moderno, feito em Python (PyQt6) com o VLC embutido.
+*(antigo IPTV Player)* — player de IPTV para Windows com visual moderno, feito em Python (PyQt6) com o VLC embutido.
 Vem com milhares de canais abertos que se atualizam sozinhos, mostra o que está passando agora
 e troca de canal sozinho: pula os canais fora do ar e tem **zapping automático**.
+A tela Início é no estilo Netflix: fileiras por tema (Esportes, Notícias, Filmes, Infantil…), separadas
+por IA, com filtro de país e cada canal uma vez só.
 
 ![IPTV Player](docs/screenshot.png)
 

@@ -19,6 +19,7 @@ class Channel:
     catchup_days: int = 0
     catchup_source: str = ""  # modelo do link do que já passou ({utc}, {duration}, {Y}-{m}-{d}…)
     catchup_offset: int = 0   # fuso do servidor em segundos (para {Y}…{S})
+    country: str = ""         # país (tvg-country), quando a lista informa
 
     @classmethod
     def from_dict(cls, d):
@@ -99,9 +100,51 @@ def parse_m3u_text(text):
                 catchup_days=_int(attrs.get("catchup-days") or attrs.get("timeshift")),
                 catchup_source=attrs.get("catchup-source", ""),
                 catchup_offset=_int(attrs.get("x-catchup-offset")),
+                country=attrs.get("tvg-country", "").split(";")[0][:2],
             ))
             info, opts = None, []
     return channels, header
+
+
+_LEAD_NUM_RE = re.compile(r"^(#EXTINF[^,]*,)\s*\d{1,5}\s+(?=\S)")
+
+
+def name_key(title):
+    """Nome do canal sem qualidade/marcas, para achar o mesmo canal em listas diferentes."""
+    n = TAG_RE.sub("", FREETV_MARK_RE.sub("", title)).lower().replace("+", " plus")
+    n = re.sub(r"\b(hd|fhd|uhd|sd|4k|1080p|720p|480p)\b", "", n)
+    return re.sub(r"[^a-z0-9]", "", n)
+
+
+def merge_m3u(texts, skip_urls=(), skip_names=()):
+    """Junta listas numa só sem repetir canal (mesmo link ou mesmo nome).
+    texts: [(texto, tira_numero, país)] — tira_numero remove o número do canal antes do nome ("126 Veja+");
+    país (ex. "BR") é marcado como tvg-country nos canais que não informam."""
+    out, urls, names = ["#EXTM3U"], set(skip_urls), set(skip_names)
+    for text, strip_num, country in texts:
+        block = []
+        for raw in text.splitlines():
+            line = raw.strip().lstrip("﻿")
+            if not line or line.startswith("#EXTM3U"):
+                continue
+            if line.startswith("#EXTINF"):
+                if strip_num:
+                    line = _LEAD_NUM_RE.sub(r"\1", line)
+                if country and "tvg-country=" not in line:
+                    line = line.replace("#EXTINF:-1", f'#EXTINF:-1 tvg-country="{country}"', 1)
+                block = [line]
+            elif line.startswith("#"):
+                if block:
+                    block.append(line)
+            else:
+                title = block[0].rsplit(",", 1)[-1] if block else ""
+                key = name_key(title)
+                if line not in urls and (not key or key not in names):
+                    urls.add(line)
+                    names.add(key)
+                    out += block + [line]
+                block = []
+    return "\n".join(out) + "\n"
 
 
 def parse_m3u(path):

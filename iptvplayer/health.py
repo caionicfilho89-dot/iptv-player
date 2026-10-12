@@ -7,7 +7,7 @@ import time
 from .paths import CACHE
 
 HEALTH_FILE = CACHE / "estabilidade.json"
-MAX_CHANNELS = 20000
+MAX_CHANNELS = 30000
 PROBE_WEIGHT = 0.5  # o teste de lista só vê se o link responde; vale metade de abrir de verdade
 
 # campos de cada canal: abriu, falhou, travou, soma dos segundos para abrir, teste ok, teste falhou, quando

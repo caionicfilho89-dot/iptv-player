@@ -1,5 +1,7 @@
 """Rede: logos, teste de canais e download de listas."""
 import hashlib
+import io
+import tarfile
 import threading
 import time
 import urllib.request
@@ -11,7 +13,11 @@ from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkReques
 from . import xtream
 from .discovery import list_urls
 from .log import log
-from .paths import LOGO_CACHE
+from .m3u import merge_m3u, name_key, parse_m3u
+from .paths import LIST_CACHE, LOGO_CACHE
+from .themes import country_from_source
+
+BACKUP_FILE = LIST_CACHE / "reservas.m3u"  # links reserva do iptv-org (fora do menu)
 
 USER_AGENT = b"VLC/3.0.21 LibVLC/3.0.21"
 
@@ -159,6 +165,59 @@ class Scanner(QObject):
         self._pump()
 
 
+def _fetch(url):
+    """Baixa um arquivo com 3 tentativas (o GitHub às vezes recusa muitos pedidos seguidos)."""
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "IPTV-Player"})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.read()
+        except OSError as e:
+            if attempt == 2:
+                log.warning("Lista %s não baixou (%s)", url.rsplit("/", 1)[-1], e)
+            else:
+                time.sleep(3 * (attempt + 1))
+    return None
+
+
+def _tar_lists(raw):
+    """(nome, texto) das listas da pasta streams/ de um pacote .tar.gz do repositório."""
+    texts = []
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
+        for m in tar.getmembers():
+            if m.isfile() and "/streams/" in m.name and m.name.endswith(".m3u"):
+                texts.append((m.name, tar.extractfile(m).read().decode("utf-8", "replace")))
+    return texts
+
+
+def _known(path):
+    """Links e nomes de uma lista já baixada."""
+    try:
+        chans, _ = parse_m3u(path)
+    except OSError:
+        return set(), set()
+    return {c.url for c in chans}, {name_key(c.name) for c in chans}
+
+
+def _save_backups(texts, skip_urls, skip_names):
+    """Links extras de canais que já existem: não aparecem na lista, servem de reserva quando o link principal cai."""
+    out = ["#EXTM3U"]
+    for _name, text in texts:
+        title = None
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith("#EXTINF"):
+                title = line
+            elif line and not line.startswith("#"):
+                if title and line not in skip_urls and name_key(title.rsplit(",", 1)[-1]) in skip_names:
+                    out += [title, line]
+                title = None
+    try:
+        BACKUP_FILE.write_text("\n".join(out) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 class ListDownloader(QObject):
     """Baixa várias listas M3U em paralelo e grava no cache."""
     one_done = pyqtSignal(str, bool)       # chave, sucesso
@@ -200,29 +259,30 @@ class ListDownloader(QObject):
     def _join_lists(self, key, urls, dest):
         """Baixa as listas da categoria e junta numa só. O GitHub às vezes recusa muitos pedidos seguidos:
         cada lista tem 3 tentativas e, se alguma faltar, a versão anterior completa é mantida."""
-        parts, missing = [], 0
+        parts, missing, skip_urls, skip_names = [], 0, (), ()
         for url in urls:
-            text = None
-            for attempt in range(3):
-                try:
-                    req = urllib.request.Request(url, headers={"User-Agent": "IPTV-Player"})
-                    with urllib.request.urlopen(req, timeout=60) as r:
-                        text = r.read().decode("utf-8", "replace")
-                    break
-                except OSError as e:
-                    if attempt == 2:
-                        log.warning("Lista %s não baixou (%s)", url.rsplit("/", 1)[-1], e)
-                    else:
-                        time.sleep(3 * (attempt + 1))
-            if text is None:
+            raw = _fetch(url)
+            if raw is None:
                 missing += 1
                 continue
-            parts.append("\n".join(ln for ln in text.splitlines() if not ln.startswith("#EXTM3U")))
+            if raw[:2] == b"\x1f\x8b":  # pacote .tar.gz
+                # repositório inteiro do iptv-org: só o que a lista geral (todos.m3u) ainda não tem
+                try:
+                    texts = _tar_lists(raw)
+                except (OSError, tarfile.TarError) as e:
+                    log.warning("Pacote %s com erro (%s)", url, e)
+                    missing += 1
+                    continue
+                skip_urls, skip_names = _known(LIST_CACHE / "todos.m3u")
+                _save_backups(texts, skip_urls, skip_names)
+                parts += [(t, False, country_from_source(name)) for name, t in texts]
+            else:
+                parts.append((raw.decode("utf-8", "replace"), "apsattv.com" in url, country_from_source(url)))
             time.sleep(0.3)
         if missing and dest.exists():
             data = b""  # fica com a cópia completa de antes
         else:
-            data = ("#EXTM3U\n" + "\n".join(parts) + "\n").encode("utf-8") if parts else b""
+            data = merge_m3u(parts, skip_urls, skip_names).encode("utf-8") if parts else b""
         self._built.emit(key, dest, data)
 
     def _build_xtream(self, key, url, dest):

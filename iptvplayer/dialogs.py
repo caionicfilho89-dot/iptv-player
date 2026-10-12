@@ -167,7 +167,7 @@ class SettingsDialog(QDialog):
         self.merge_dupes = QCheckBox("Juntar canais repetidos (fica o melhor link; os outros viram reserva)")
         self.merge_dupes.setChecked(cfg["merge_dupes"])
         lay.addWidget(self.merge_dupes)
-        self.check_upd = QCheckBox("Avisar quando houver uma nova versão do IPTV Player")
+        self.check_upd = QCheckBox("Avisar quando houver uma nova versão do PudimFlix")
         self.check_upd.setChecked(cfg["check_updates"])
         lay.addWidget(self.check_upd)
         lay.addLayout(_row(make_btn("folder", "Arquivo com o que o programa fez e os erros que aconteceram — "
@@ -179,7 +179,7 @@ class SettingsDialog(QDialog):
         cancel = QPushButton("Cancelar")
         cancel.clicked.connect(self.reject)
         bottom = QHBoxLayout()
-        bottom.addWidget(QLabel(f"IPTV Player v{APP_VERSION}", objectName="muted"))
+        bottom.addWidget(QLabel(f"PudimFlix v{APP_VERSION}", objectName="muted"))
         bottom.addStretch(1)
         bottom.addWidget(cancel)
         bottom.addWidget(ok)

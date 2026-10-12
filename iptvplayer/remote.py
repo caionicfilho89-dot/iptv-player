@@ -108,7 +108,7 @@ class RemoteServer(QObject):
                 path, _, query = self.path.partition("?")
                 q = urllib.parse.parse_qs(query)
                 if not self._ok_key(q):
-                    return self._send(403, "Leia o QR code no IPTV Player para abrir o controle.",
+                    return self._send(403, "Leia o QR code no PudimFlix para abrir o controle.",
                                       "text/plain; charset=utf-8")
                 if path == "/":
                     return self._send(200, PAGE, "text/html; charset=utf-8")

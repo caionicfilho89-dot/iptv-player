@@ -6,7 +6,7 @@ from pathlib import Path
 from .paths import BASE
 
 VLC_MISSING_MSG = ("O VLC (64 bits) não foi encontrado neste computador.\n\n"
-                   "Instale gratuitamente em https://www.videolan.org/vlc/ e abra o IPTV Player de novo.")
+                   "Instale gratuitamente em https://www.videolan.org/vlc/ e abra o PudimFlix de novo.")
 
 
 def _load():

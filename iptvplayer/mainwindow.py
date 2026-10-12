@@ -3,19 +3,20 @@ import json
 import math
 import random
 import re
+import threading
 import time
 import unicodedata
 from dataclasses import replace
 from pathlib import Path
 
-from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRect, QSize, Qt, QTimer, QUrl
+from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRect, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QCursor, QDesktopServices, QFont, QGuiApplication, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply
 from PyQt6.QtWidgets import (
     QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QListView,
     QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QSizePolicy,
-    QSlider, QSpinBox, QSplitter, QVBoxLayout, QWidget,
+    QSlider, QSpinBox, QSplitter, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from . import APP_NAME, APP_VERSION, REPO
@@ -32,16 +33,18 @@ from .dialogs import AddListDialog, GuideDialog, KidsDialog, SeriesDialog, Setti
 from .epg import EpgManager
 from .epggrid import EpgGridDialog
 from .health import Health
+from .home import HomePage
+from . import themes
 from .log import log
-from .m3u import Channel, header_epg_urls, is_brazilian, parse_m3u
+from .m3u import Channel, header_epg_urls, is_brazilian, name_key, parse_m3u
 from .mosaic import MosaicWindow
-from .net import ListDownloader, LogoLoader, Scanner, make_request
+from .net import BACKUP_FILE, ListDownloader, LogoLoader, Scanner, make_request
 from .pip import PipWindow
 from .recorder import Recorder, clip_path, snapshot_path
 from .timeshift import LIVE_DELAY_OPT, START_WAIT_MS, Timeshift, supports as timeshift_supports
 from .remote import RemoteServer, qr_pixmap
 from .updater import UpdateDownloader, can_self_update, run_installer, setup_asset
-from .theme import T, app_icon, apply_theme, build_style, icon
+from .theme import T, app_icon, app_icon_pixmap, apply_theme, build_style, icon
 from .vlcload import vlc
 from .widgets import (
     ChannelModel, FullscreenOverlay, GridDelegate, ListDelegate, SeekSlider, VideoFrame, make_btn, refresh_icons,
@@ -58,6 +61,8 @@ LIST_MAX_AGE = 86400          # atualização automática das listas (1× por di
 UPDATE_CHECK_EVERY = 12 * 3600
 COMPACT_BELOW = 1080         # largura da janela abaixo da qual a barra lateral vira só ícones
 LABEL_ROLE = Qt.ItemDataRole.UserRole + 1
+THEME_PREFIX = "tema:"       # categorias montadas pela tela Início (um tema com canais de todas as listas)
+BRASIL_ROW = THEME_PREFIX + "brasil"
 
 
 def fold(text):
@@ -74,6 +79,8 @@ def version_tuple(s):
 
 
 class MainWindow(QMainWindow):
+    _library_built = pyqtSignal(object)  # biblioteca da tela Início montada numa tarefa
+
     def __init__(self, cfg=None):
         super().__init__()
         self.setWindowTitle(APP_NAME)
@@ -141,6 +148,14 @@ class MainWindow(QMainWindow):
         self._alt_tried = set()
         pos = self.cfg["explore_pos"]
         self.explore_cat, self.explore_idx = (pos[0], pos[1]) if len(pos) == 2 else (None, -1)
+        self.library = []            # tela Início: canais de todas as listas sem repetir, com tema e país
+        self.lib_by_key = {}
+        self.theme_ai_cache = themes.load_ai_cache()
+        self.theme_ai = None         # IA classificando os canais sem tema (em segundo plano)
+        self._lib_building = False
+        self._library_built.connect(self._on_library_built)
+        self.home_timer = QTimer(self, singleShot=True, interval=500, timeout=self.refresh_home)
+        self._guide_known = {}       # url -> o canal tem programação no guia (sobe nas fileiras)
 
         self.instance = vlc.Instance(["--no-video-title-show", "--network-caching=1500", "--quiet",
                                       "--sub-source=marq"])
@@ -197,9 +212,8 @@ class MainWindow(QMainWindow):
         self._set_view_mode(self.cfg["view_mode"])
         self._kids_button_text()
         self._select_category(self.cfg["last_category"])
-        last = next((c for c in self.all_channels if c.url == self.cfg["last_url"]), None)
-        if last:
-            QTimer.singleShot(400, lambda: self.play(last))
+        self.go_home()
+        QTimer.singleShot(200, self._rebuild_library)
         QTimer.singleShot(1500, lambda: self._reload_epg())
         QTimer.singleShot(4000, self._auto_update_lists)
         self.list_timer = QTimer(self, interval=3600 * 1000, timeout=self._auto_update_lists)
@@ -233,7 +247,6 @@ class MainWindow(QMainWindow):
         self.update_banner = make_btn("download", "", self._update_clicked, kind="banner", icon_color="white",
                                       icon_size=16)
         self.update_banner.hide()
-        sl.addWidget(self.update_banner)
         for name, text, slot in (("smile", "Modo infantil", self.toggle_kids),
                                  ("phone", "Controle pelo celular", self.open_remote),
                                  ("plus", "Adicionar lista", self.add_list),
@@ -249,8 +262,6 @@ class MainWindow(QMainWindow):
                 self.upd_btn = b
         self.side_lbl = QLabel("", objectName="muted")
         self.side_lbl.setWordWrap(True)
-        self.side_lbl.setContentsMargins(18, 2, 12, 0)
-        sl.addWidget(self.side_lbl)
 
         # --- lista de canais
         self.chan_panel = QWidget(objectName="channels")
@@ -259,6 +270,7 @@ class MainWindow(QMainWindow):
         cl.setContentsMargins(10, 14, 6, 10)
         cl.setSpacing(8)
         head = QHBoxLayout()
+        head.addWidget(make_btn("home", "Voltar ao Início (Esc)", self.go_home, kind="tool", icon_size=18))
         self.cat_title = QLabel("", objectName="nowTitle")
         head.addWidget(self.cat_title, 1)
         self.view_btn = make_btn("grid", "Ver em grade", self._toggle_view_mode, kind="tool", icon_size=18)
@@ -327,7 +339,22 @@ class MainWindow(QMainWindow):
         self.splitter.setChildrenCollapsible(False)
         lay.addWidget(self.sidebar)
         lay.addWidget(self.splitter, 1)
-        self.setCentralWidget(root)
+        self.sidebar.hide()  # o menu antigo saiu: as categorias ficam na tela Início (botão Fontes)
+        self.home = HomePage(self)
+        self.home.play.connect(self._play_from_home)
+        self.home.open_category.connect(self.open_category)
+        self.home.region_changed.connect(self._set_region)
+        self.home.resume.connect(self.show_player)
+        self.home.surprise.connect(self.surprise_anywhere)
+        idx = self.home.region.findData(self.cfg["region"])
+        self.home.region.blockSignals(True)
+        self.home.region.setCurrentIndex(max(0, idx))
+        self.home.region.blockSignals(False)
+        self._build_home_bar()
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.home)
+        self.stack.addWidget(root)
+        self.setCentralWidget(self.stack)
         self._paint_brand()
         self._build_nav()
 
@@ -354,11 +381,11 @@ class MainWindow(QMainWindow):
         self.seek_row.hide()
         v.addWidget(self.seek_row)
 
-        top = QHBoxLayout()
+        info_row = QHBoxLayout()
         self.now_logo = QLabel()
         self.now_logo.setFixedSize(76, 48)
         self.now_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        top.addWidget(self.now_logo)
+        info_row.addWidget(self.now_logo)
         info = QVBoxLayout()
         info.setSpacing(1)
         self.now_title = QLabel("Nenhum canal", objectName="nowTitle")
@@ -372,7 +399,9 @@ class MainWindow(QMainWindow):
         self.epg_bar.setFixedHeight(3)
         self.epg_bar.hide()
         info.addWidget(self.epg_bar)
-        top.addLayout(info, 1)
+        info_row.addLayout(info, 1)
+        v.addLayout(info_row)
+        top = QHBoxLayout()
 
         self.fav_btn = make_btn("star", "Favoritar (Ctrl+D)", self.toggle_fav_current)
         top.addWidget(self.fav_btn)
@@ -391,7 +420,7 @@ class MainWindow(QMainWindow):
         for b in (self.back_btn, self.fwd_btn, self.live_btn, self.clip_btn):
             b.setEnabled(False)
             top.addWidget(b)
-        top.addSpacing(14)
+        top.addStretch(1)
         self.mute_btn = make_btn("volume", "Mudo (Ctrl+M)", self.toggle_mute)
         top.addWidget(self.mute_btn)
         self.vol = QSlider(Qt.Orientation.Horizontal)
@@ -404,7 +433,8 @@ class MainWindow(QMainWindow):
         top.addWidget(make_btn("fullscreen", "Tela cheia (F11 / duplo clique)", self.toggle_fullscreen))
         v.addLayout(top)
 
-        auto = QHBoxLayout()
+        self._tools_box = QWidget(w)  # botões guardados: aparecem pelo menu "Mais"
+        auto = QHBoxLayout(self._tools_box)
         auto.setSpacing(6)
         self.skip_cb = QCheckBox("Pular offline")
         self.skip_cb.setChecked(self.cfg["skip_dead"])
@@ -455,13 +485,11 @@ class MainWindow(QMainWindow):
         auto.addWidget(self.surprise_btn)
         self.zap_lbl = QLabel("", objectName="muted")
         self.zap_lbl.setMinimumWidth(30)
-        auto.addWidget(self.zap_lbl)
         self.info_lbl = QLabel("", objectName="muted")
         self.info_lbl.setOpenExternalLinks(True)
         self.info_lbl.setTextFormat(Qt.TextFormat.RichText)
         self.info_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.info_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        auto.addWidget(self.info_lbl, 1)
+        self.info_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.cc_btn = make_btn("cc", "Legendas traduzidas por IA (Ctrl+T)", kind="tool", checkable=True,
                                icon_size=18)
         self.cc_btn.toggled.connect(self._toggle_captions)
@@ -480,14 +508,349 @@ class MainWindow(QMainWindow):
         self.sleep_btn = make_btn("timer", "Timer para desligar", self._sleep_menu, kind="tool", icon_size=18)
         self.stats_btn = make_btn("trophy", "Retrospectiva: seus canais mais vistos e conquistas (Ctrl+Shift+H)",
                                   self.open_stats, kind="tool", icon_size=18)
-        for b in (self.cc_btn, self.dub_btn, self.tracks_btn, self.guide_btn, self.snap_btn, self.rec_btn, self.pip_btn, self.mosaic_btn, self.sleep_btn, self.stats_btn):
+        for b in (self.dub_btn, self.tracks_btn, self.snap_btn, self.pip_btn, self.mosaic_btn, self.sleep_btn,
+                  self.stats_btn):
             auto.addWidget(b)
+        self._tools_box.hide()
+        self.more_btn = make_btn("settings", "Mais: zapping, explorar, dublagem, foto, mosaico, timer…",
+                                 self._more_menu, kind="", text="  Mais", icon_size=17)
+        fs = top.itemAt(top.count() - 1).widget()  # tela cheia fica por último
+        top.removeWidget(fs)
+        for b in (self.cc_btn, self.guide_btn, self.rec_btn):
+            top.addWidget(b)
+        top.addSpacing(6)
+        top.addWidget(self.more_btn)
+        top.addWidget(fs)
         self.sleep_lbl = QLabel("", objectName="muted")
-        auto.addWidget(self.sleep_lbl)
-        v.addLayout(auto)
+        status = QHBoxLayout()
+        status.setContentsMargins(0, 0, 0, 0)
+        status.addWidget(self.info_lbl, 1)
+        status.addWidget(self.zap_lbl)
+        status.addWidget(self.sleep_lbl)
+        v.addLayout(status)
         return w
 
+    # ================================================================ tela Início (estilo Netflix)
+    def _build_home_bar(self):
+        bar = self.home.extra_bar
+        self.side_lbl.setMaximumWidth(280)
+        bar.addWidget(self.side_lbl)
+        bar.addWidget(self.update_banner)
+        self.player_btn = make_btn("play", "Voltar ao canal que está tocando", self.show_player, kind="",
+                                   text="  Player", icon_size=16)
+        self.player_btn.hide()
+        bar.addWidget(self.player_btn)
+        self.sources_btn = make_btn("layers", "Todas as listas e serviços (iptv-org, Pluto, Samsung, LG…)",
+                                    self._sources_menu, kind="", text="  Fontes", icon_size=16)
+        bar.addWidget(self.sources_btn)
+        self.home_menu_btn = make_btn("settings", "Menu", self._home_menu, kind="tool", icon_size=18)
+        bar.addWidget(self.home_menu_btn)
+
+    def _menu_pos(self, m):
+        """Menus do player abrem em cima do botão Mais (os botões originais ficam guardados)."""
+        if self.more_btn.isVisible():
+            return self.more_btn.mapToGlobal(QPoint(0, -m.sizeHint().height() - 4))
+        return QCursor.pos()
+
+    def _home_menu(self):
+        m = QMenu(self)
+        m.addAction(icon("refresh", "text", 16), "Atualizar canais", lambda: self.update_lists())
+        m.addAction(icon("plus", "text", 16), "Adicionar lista ou conta…", self.add_list)
+        m.addAction(icon("phone", "text", 16), "Controle pelo celular", self.open_remote)
+        m.addAction(icon("trophy", "text", 16), "Retrospectiva", self.open_stats)
+        m.addAction(icon("smile", "text", 16), "Sair do modo infantil" if self.cfg["kids"] else "Modo infantil",
+                    self.toggle_kids)
+        m.addSeparator()
+        m.addAction(icon("settings", "text", 16), "Configurações", self.open_settings)
+        m.exec(self.home_menu_btn.mapToGlobal(QPoint(0, self.home_menu_btn.height() + 4)))
+
+    def _sources_menu(self):
+        if self._kids_block():
+            return
+        m = QMenu(self)
+        entries = {k: (label, ic) for k, label, ic in src.builtin_entries()}
+
+        def add(menu, k):
+            if k in entries:
+                label, ic = entries[k]
+                menu.addAction(icon(ic, "text", 16), label, lambda key=k: self.open_category(key))
+
+        for title, keys in src.NAV_GROUPS:
+            sub = m.addMenu(title)
+            for k in keys:
+                add(sub, k)
+        fast = m.addMenu("Grátis com propaganda")
+        for k in entries:
+            if k in src.FAST_KEYS:
+                add(fast, k)
+        shown = {k for _, keys in src.NAV_GROUPS for k in keys} | src.FAST_KEYS
+        others = [k for k in entries if k not in shown]
+        if others:
+            sub = m.addMenu("Outros")
+            for k in others:
+                add(sub, k)
+        if self.cfg["custom_sources"]:
+            sub = m.addMenu("Minhas listas")
+            for s in self.cfg["custom_sources"]:
+                key = src.custom_key(s)
+                one = sub.addMenu(icon("link" if src.is_remote(s["url"]) else "folder", "text", 16), s["name"])
+                one.addAction(icon("tv", "text", 16), "Abrir", lambda k=key: self.open_category(k))
+                for part, label, ic in src.vod_parts(s):
+                    one.addAction(icon(ic, "text", 16), label,
+                                  lambda k=src.custom_key(s, part): self.open_category(k))
+                if src.download_url(key, self.cfg["custom_sources"]):
+                    one.addAction(icon("refresh", "text", 16), "Atualizar", lambda k=key: self.update_lists([k]))
+                one.addAction(icon("settings", "text", 16), "Editar…", lambda k=key: self.edit_list(k))
+                one.addAction(icon("trash", "bad", 16), "Remover", lambda k=key: self.remove_list(k))
+        m.addSeparator()
+        m.addAction(icon("star", "text", 16), "Favoritos", lambda: self.open_category(src.FAV_KEY))
+        m.addAction(icon("clock", "text", 16), "Recentes", lambda: self.open_category(src.RECENT_KEY))
+        m.addAction(icon("sparkle", "text", 16), "Novos", lambda: self.open_category(src.NEW_KEY))
+        m.exec(self.sources_btn.mapToGlobal(QPoint(0, self.sources_btn.height() + 4)))
+
+    def _more_menu(self):
+        """Tudo que saiu da barra do player: modos de assistir e ferramentas."""
+        m = QMenu(self)
+
+        def act(menu, b, text, ic):
+            a = menu.addAction(icon(ic, "text", 16), text, b.click)
+            a.setEnabled(b.isEnabled())
+            if b.isCheckable():
+                a.setCheckable(True)
+                a.setChecked(b.isChecked())
+            return a
+
+        act(m, self.last_btn, "Voltar ao último canal   Ctrl+B", "refresh")
+        act(m, self.surprise_btn, "Surpreenda-me   Ctrl+Shift+S", "shuffle")
+        m.addSeparator()
+        act(m, self.zap_btn, "Zapping: troca de canal sozinho   Ctrl+Z", "shuffle")
+        act(m, self.minute_btn, "Rolagem: próximo canal a cada 1 minuto", "next")
+        act(m, self.explore_btn, "Explorar todos os canais   Ctrl+E", "compass")
+        z = m.addMenu(icon("timer", "text", 16), "Ajustes do zapping")
+        for secs, label in ((10, "A cada 10 segundos"), (30, "A cada 30 segundos"), (60, "A cada 1 minuto"),
+                            (120, "A cada 2 minutos"), (300, "A cada 5 minutos")):
+            a = z.addAction(label, lambda v=secs: self.zap_spin.setValue(v))
+            a.setCheckable(True)
+            a.setChecked(self.zap_spin.value() == secs)
+        z.addSeparator()
+        a = z.addAction("Ordem aleatória", lambda: self.zap_mode.setCurrentIndex(1 - self.zap_mode.currentIndex()))
+        a.setCheckable(True)
+        a.setChecked(self.zap_mode.currentIndex() == 1)
+        act(z, self.zap_favs_cb, "Só pelos favoritos", "star")
+        a = z.addAction("Pular canais que não abrem", self.skip_cb.toggle)
+        a.setCheckable(True)
+        a.setChecked(self.skip_cb.isChecked())
+        m.addSeparator()
+        act(m, self.dub_btn, "Dublagem por IA   Ctrl+U", "dub")
+        act(m, self.tracks_btn, "Áudio e legenda do canal", "tracks")
+        act(m, self.snap_btn, "Tirar foto da tela   Ctrl+S", "camera")
+        act(m, self.pip_btn, "Janela flutuante   Ctrl+P", "pip")
+        act(m, self.mosaic_btn, "Mosaico: vários canais juntos", "mosaic")
+        act(m, self.sleep_btn, "Timer para desligar", "timer")
+        m.addAction(icon("guide", "text", 16), "Grade de programação desta lista", self.open_grid)
+        act(m, self.stats_btn, "Retrospectiva", "trophy")
+        m.exec(self._menu_pos(m))
+
+    def go_home(self):
+        if self.fullscreen:
+            self.toggle_fullscreen()
+        self.stack.setCurrentWidget(self.home)
+        self.refresh_home()
+
+    def show_player(self):
+        self.stack.setCurrentIndex(1)
+
+    def open_category(self, key):
+        if key == "pravoce":
+            key = THEME_PREFIX + getattr(self, "_foryou_theme", "variedades")
+        self._select_category(key, from_nav=True)
+        self.show_player()
+
+    def _play_from_home(self, ch, row_key):
+        """Cartão clicado: a fileira vira a lista do player (próximo/anterior andam dentro dela)."""
+        if row_key in ("busca", "pravoce"):
+            e = self.lib_by_key.get(name_key(ch.name))
+            row_key = THEME_PREFIX + (e.theme if e else "variedades")
+        if row_key != self.category:
+            self._select_category(row_key, from_nav=True)
+        self.show_player()
+        self.play(ch)
+
+    def surprise_anywhere(self):
+        ents = self._region_entries()
+        pool = [e.ch for e in ents if self.health.level(e.ch.url) >= 2] or [e.ch for e in ents]
+        if pool:
+            self._info("🎲 Surpresa!", 2)
+            self._play_from_home(random.choice(pool), "pravoce")
+
+    def _set_region(self, key):
+        self.cfg["region"] = key
+        self.refresh_home()
+        if self.category and self.category.startswith(THEME_PREFIX):
+            self._select_category(self.category, from_nav=None)
+
+    def _region_entries(self):
+        """Canais da biblioteca do país escolhido, sem os que estão fora do ar; Brasil e os estáveis primeiro."""
+        allowed = themes.REGION_SET.get(self.cfg["region"])
+        out = [e for e in self.library
+               if (allowed is None or e.country in allowed)
+               and self.status_of(e.ch.url) != "dead" and self.health.level(e.ch.url) != 1]
+
+        guide = self._guide_known
+
+        def rank(e):
+            s = self.health.score(e.ch.url)
+            g = guide.get(e.ch.url)
+            if g is None:
+                g = guide[e.ch.url] = bool(self.epg.schedule(e.ch))
+            return e.country != "BR", -(0.5 if s is None else s), not g, not e.ch.logo
+        out.sort(key=rank)
+        return out
+
+    def _theme_channels(self, key):
+        theme = key[len(THEME_PREFIX):]
+        ents = self._region_entries()
+        if theme == "brasil":
+            return [e.ch for e in ents if e.country == "BR"]
+        return [e.ch for e in ents if e.theme == theme]
+
+    def _for_you(self, ents):
+        """Canais dos temas que você mais assiste (pela retrospectiva) que você ainda não viu."""
+        weight, seen = {}, set()
+        for st in self.cfg["stats"].values():
+            k = name_key(st.get("name", ""))
+            seen.add(k)
+            e = self.lib_by_key.get(k)
+            if e:
+                weight[e.theme] = weight.get(e.theme, 0) + int(st.get("secs", 0))
+        if not weight:
+            return [e.ch for e in ents if self.health.level(e.ch.url) == 3]
+        top = sorted(weight, key=weight.get, reverse=True)[:3]
+        self._foryou_theme = top[0]
+        by = {t: [e.ch for e in ents if e.theme == t and e.key not in seen] for t in top}
+        out = []
+        for i in range(max(len(v) for v in by.values())):
+            out += [by[t][i] for t in top if i < len(by[t])]  # intercala os temas
+        return out
+
+    def refresh_home(self):
+        if not hasattr(self, "home"):
+            return
+        ents = self._region_entries()
+        q = fold(self.home.search.text().strip())
+        if q:
+            chans = [e.ch for e in ents]
+            res = [c for c in chans if q in fold(c.name)]
+            word_theme = themes.theme_by_words(q)
+            for key, label, _ in themes.THEMES:
+                if q in fold(label) or key == word_theme:
+                    res += [e.ch for e in ents if e.theme == key]
+            self.epg_hits = {}
+            if len(q) >= 3 and self.epg.has_data():
+                found = {c.url for c in res}
+                self.epg_hits = self._epg_search(q, [c for c in chans if c.url not in found])
+                res += [c for c in chans if c.url in self.epg_hits]
+            seen = set()
+            self.home.set_search_results([c for c in res if not (c.url in seen or seen.add(c.url))])
+            return
+        self.home.set_search_results([])
+        kids = self.cfg["kids"]
+        rows = []
+        if not kids:
+            rec = [Channel.from_dict(f) for f in self.cfg["recents"]]
+            fav = [Channel.from_dict(f) for f in self.cfg["favorites"]]
+            foryou = self._for_you(ents) if self.library else []
+            rows += [(src.RECENT_KEY, "Continuar assistindo", rec, len(rec)),
+                     (src.FAV_KEY, "Seus favoritos", fav, len(fav)),
+                     ("pravoce", "Pra você", foryou, len(foryou))]
+            if self.cfg["region"] == "all":
+                br = [e.ch for e in ents if e.country == "BR"]
+                rows.append((BRASIL_ROW, "Do Brasil", br, len(br)))
+        for key, label, _ in themes.THEMES:
+            if kids and key != "infantil":
+                continue
+            chans = [e.ch for e in ents if e.theme == key]
+            rows.append((THEME_PREFIX + key, label, chans, len(chans)))
+        if not kids:
+            new = self.newch.channels()
+            rows.append((src.NEW_KEY, "Chegaram agora", new, len(new)))
+        self.home.set_rows(rows)
+        if not self.library:
+            self.home.empty.setText("Carregando os canais…" if self._lib_building else
+                                    "Nenhum canal ainda — use Menu › Atualizar canais")
+            self.home.empty.setVisible(True)
+        ch = self.current or (Channel.from_dict(self.cfg["recents"][0]) if self.cfg["recents"] else None)
+        now = ""
+        if ch and self.epg.has_data():
+            cur, nxt = self.epg.now_next(ch)
+            if cur:
+                now = "Agora: " + cur[2] + (f"   ·   Depois: {nxt[2]}" if nxt else "")
+        self.home.set_hero(ch, self.current is not None, now)
+        self.player_btn.setVisible(self.current is not None)
+
+    # --- biblioteca: todos os canais sem repetir, com tema e país
+    def _library_files(self):
+        custom = self.cfg["custom_sources"]
+        keys = [k for k, *_ in src.builtin_entries()] + [src.custom_key(s) for s in custom]
+        return [(k, p) for k in keys if not src.is_vod_key(k) for p in [src.file_for(k, custom)] if p]
+
+    def _rebuild_library(self):
+        if self._lib_building:
+            self._lib_dirty = True
+            return
+        self._lib_building = True
+        self._lib_dirty = False
+        files, cache, score = self._library_files(), dict(self.theme_ai_cache), self.health.score
+
+        def work():
+            try:
+                lib = themes.build_library(files, score, cache)
+            except Exception:  # noqa: BLE001
+                log.exception("Biblioteca da tela Início")
+                lib = None
+            self._library_built.emit(lib)
+        threading.Thread(target=work, daemon=True, name="biblioteca").start()
+
+    def _on_library_built(self, lib):
+        self._lib_building = False
+        if lib is not None:
+            self.library = lib
+            self.lib_by_key = {e.key: e for e in lib}
+            log.info("Tela Início: %d canais (%d esperando a IA)", len(lib), sum(e.pending for e in lib))
+            if self.category and self.category.startswith(THEME_PREFIX):
+                self._select_category(self.category, from_nav=None)
+            self.refresh_home()
+            QTimer.singleShot(20000, self._start_theme_ai)  # deixa o programa abrir com calma
+        if self._lib_dirty:
+            QTimer.singleShot(0, self._rebuild_library)
+
+    def _start_theme_ai(self):
+        if (self.theme_ai and self.theme_ai.isRunning()) or self.captions is not None:
+            return  # a IA de legendas já está usando a placa de vídeo
+        pending = [(e.key, e.ch.name, e.ch.group) for e in self.library
+                   if e.pending and e.key not in self.theme_ai_cache]
+        if not pending:
+            return
+        pending.sort(key=lambda t: self.lib_by_key[t[0]].country != "BR")  # do Brasil primeiro
+        self.theme_ai = themes.ThemeAI(pending, self)
+        self.theme_ai.classified.connect(self._on_theme_ai)
+        self.theme_ai.finished.connect(lambda: themes.save_ai_cache(self.theme_ai_cache))
+        self.theme_ai.start()
+
+    def _on_theme_ai(self, found):
+        self.theme_ai_cache.update(found)
+        for k, theme in found.items():
+            e = self.lib_by_key.get(k)
+            if e:
+                e.theme, e.pending = theme, False
+        self._ai_batches = getattr(self, "_ai_batches", 0) + 1
+        if self._ai_batches % 5 == 0:
+            themes.save_ai_cache(self.theme_ai_cache)  # as fileiras mudam na próxima vez que o Início abrir
+
     def _paint_brand(self):
+        self.home.brand.setText(f"Pudim<span style='color:{T['accent']}'>Flix</span>")
+        self.home.brand_icon.setPixmap(app_icon_pixmap(64).scaled(
+            34, 34, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         if self._compact:
             self.brand.setText(f"<span style='color:{T['accent']}'>▶</span>")
         else:
@@ -504,7 +867,6 @@ class MainWindow(QMainWindow):
         for b, text in self._side_btns:
             b.setText("" if compact else "  " + text)
             b.setToolTip(text if compact else "")
-        self.side_lbl.setVisible(not compact)
         if self._banner_tag:
             self._show_update_banner(self._banner_tag)
         self._paint_brand()
@@ -556,6 +918,8 @@ class MainWindow(QMainWindow):
             self._update_now_info()
         elif self.fullscreen:
             self.toggle_fullscreen()
+        elif self.stack.currentWidget() is not self.home:
+            self.go_home()
 
     def keyPressEvent(self, e):
         # em tela cheia a lista está oculta: setas também trocam de canal
@@ -679,6 +1043,9 @@ class MainWindow(QMainWindow):
             m.exec(self.nav.viewport().mapToGlobal(pos))
 
     def _label_for(self, key):
+        if key.startswith(THEME_PREFIX):
+            theme = key[len(THEME_PREFIX):]
+            return "Do Brasil" if theme == "brasil" else themes.THEME_LABEL.get(theme, theme)
         for i in range(self.nav.count()):
             it = self.nav.item(i)
             if it.data(Qt.ItemDataRole.UserRole) == key:
@@ -687,6 +1054,8 @@ class MainWindow(QMainWindow):
 
     def _load_category(self, key):
         """Canais da categoria; dispara o download se ainda não houver arquivo local."""
+        if key.startswith(THEME_PREFIX):
+            return self._theme_channels(key)
         if key == src.FAV_KEY:
             return [Channel.from_dict(f) for f in self.cfg["favorites"]]
         if key == src.RECENT_KEY:
@@ -711,7 +1080,7 @@ class MainWindow(QMainWindow):
         return self.playlists[key][0]
 
     def _select_category(self, key, from_nav=False):
-        if self.cfg["kids"] and key not in self.cfg["kids_cats"]:
+        if self.cfg["kids"] and key not in self.cfg["kids_cats"] and key != THEME_PREFIX + "infantil":
             key = self.cfg["kids_cats"][0]
         if not from_nav:
             for i in range(self.nav.count()):
@@ -731,7 +1100,8 @@ class MainWindow(QMainWindow):
                                  else "Verifica em segundo plano quais canais desta lista estão no ar")
         self.all_channels = self._load_category(key)
         self.merged = 0
-        if self.cfg["merge_dupes"] and key not in src.SPECIAL_KEYS and not src.is_vod_key(key):
+        if (self.cfg["merge_dupes"] and key not in src.SPECIAL_KEYS and not src.is_vod_key(key)
+                and not key.startswith(THEME_PREFIX)):
             self.all_channels, self.merged = self._merge_dupes(self.all_channels)
         self.numbers = {c.url: i + 1 for i, c in enumerate(self.all_channels)}
         if key not in src.SPECIAL_KEYS and not self.cfg["kids"]:
@@ -757,7 +1127,8 @@ class MainWindow(QMainWindow):
         if len(q) >= 3 and self.epg.has_data() and not src.is_vod_key(self.category):
             found = {c.url for c in named}
             self.epg_hits = self._epg_search(q, [c for c in self.all_channels if c.url not in found])
-        hide = hide or self.category in src.FAST_KEYS  # nos serviços grátis só aparece o que funciona
+        # nos serviços grátis e nos temas só aparece o que funciona
+        hide = hide or self.category in src.FAST_KEYS or (self.category or "").startswith(THEME_PREFIX)
         self.visible = [c for c in self.all_channels
                         if (not q or q in c.name.lower() or q in c.group.lower() or c.url in self.epg_hits)
                         and (not grp or c.group == grp)
@@ -861,6 +1232,9 @@ class MainWindow(QMainWindow):
 
     def _on_logo(self, url):
         self.view.viewport().update()
+        self.home.update_views()
+        if self.home._hero_ch and self.home._hero_ch.logo == url:
+            self.home_timer.start()
         if self.current and self.current.logo == url:
             self._update_now_info()
 
@@ -871,6 +1245,11 @@ class MainWindow(QMainWindow):
     def _auto_update_lists(self):
         if self.cfg["auto_update_lists"] and time.time() - self.cfg["lists_updated"] > LIST_MAX_AGE:
             self.update_lists()
+            return
+        # categorias que chegaram numa versão nova do programa: baixa já, para entrarem na tela Início
+        missing = [k for k, _, _, remote in src.BUILTIN if remote and not src.file_for(k, self.cfg["custom_sources"])]
+        if missing:
+            self.update_lists(missing)
 
     def update_lists(self, keys=None):
         if self.downloader.running:
@@ -922,6 +1301,7 @@ class MainWindow(QMainWindow):
             msg += f", {fail} com erro"
         if ok:
             self.links.invalidate()
+            self._rebuild_library()
             self.newch.save()
             self._build_nav()
             if self.category == src.NEW_KEY:
@@ -998,7 +1378,10 @@ class MainWindow(QMainWindow):
         self.epg.load(urls, force)
 
     def _on_epg_updated(self):
+        self._guide_known.clear()
+        self.home_timer.start()
         self.view.viewport().update()
+        self.home.update_views()
         self._update_now_info()
         QTimer.singleShot(6000, lambda: self.side_lbl.text().startswith("Guia:") and self._side_status(""))
 
@@ -1620,7 +2003,8 @@ class MainWindow(QMainWindow):
     # ================================================================ links alternativos
     def _link_files(self):
         keys = [k for k, *_ in src.builtin_entries()] + [src.custom_key(s) for s in self.cfg["custom_sources"]]
-        return [p for p in (src.file_for(k, self.cfg["custom_sources"]) for k in keys) if p]
+        files = [p for p in (src.file_for(k, self.cfg["custom_sources"]) for k in keys) if p]
+        return files + [BACKUP_FILE] if BACKUP_FILE.exists() else files
 
     def _try_alternative(self, ch):
         """Canal caiu: procura o mesmo canal em outro link (de qualquer lista) antes de desistir."""
@@ -1893,7 +2277,7 @@ class MainWindow(QMainWindow):
             if rem <= 60 and not self._sleep_warned:
                 self._sleep_warned = True
                 self._show_marquee("Desligando em 1 minuto…", timeout=6000)
-                self._info("O timer vai fechar o IPTV Player em 1 minuto.")
+                self._info("O timer vai fechar o PudimFlix em 1 minuto.")
         if self.recorder.active:
             if self.recorder.failed():
                 self.rec_btn.setChecked(False)
@@ -2084,7 +2468,7 @@ class MainWindow(QMainWindow):
             return
         if not getattr(self, "tray", None):
             self.tray = QSystemTrayIcon(app_icon(), self)
-            self.tray.setToolTip("IPTV Player")
+            self.tray.setToolTip(APP_NAME)
             self.tray.messageClicked.connect(self._notify_clicked)
             self.tray.show()
         self._notify_ch = ch
@@ -2179,7 +2563,7 @@ class MainWindow(QMainWindow):
             option("Desligada", cur < 0, lambda: self._set_track("spu", -1, ""))
             for i, name in spu:
                 option(name, i == cur, lambda i=i, n=name: self._set_track("spu", i, n))
-        m.exec(self.tracks_btn.mapToGlobal(QPoint(0, -m.sizeHint().height() - 4)))
+        m.exec(self._menu_pos(m))
 
     def _set_track(self, kind, track_id, name):
         """Troca a faixa e lembra a escolha para este canal."""
@@ -2232,7 +2616,7 @@ class MainWindow(QMainWindow):
             if cur:
                 m.addSeparator()
                 m.addAction(f"Ao fim do programa atual ({hm(cur[1])})", lambda end=cur[1]: self._set_sleep(end))
-        m.exec(self.sleep_btn.mapToGlobal(QPoint(0, -m.sizeHint().height() - 4)))
+        m.exec(self._menu_pos(m))
 
     def _set_sleep(self, deadline):
         self.sleep_deadline = deadline
@@ -2241,7 +2625,7 @@ class MainWindow(QMainWindow):
         set_btn_icon(self.sleep_btn, "timer")
         self.sleep_lbl.setText("")
         if deadline:
-            self._info(f"O IPTV Player vai fechar às {hm(deadline)}.")
+            self._info(f"O PudimFlix vai fechar às {hm(deadline)}.")
 
     # ================================================================ número do canal
     def eventFilter(self, obj, e):
@@ -2467,6 +2851,7 @@ class MainWindow(QMainWindow):
         if self.auto_scanner.cancelled:  # programa fechando: guarda o progresso para continuar depois
             self.scan_progress.save()
             return
+        self.home_timer.start()  # canais fora do ar saem das fileiras
         ok, dead = self._auto_counts
         log.info("Teste automático terminou: %d no ar, %d fora do ar", ok, dead)
         self.cfg["last_full_scan"] = time.time()
@@ -2519,7 +2904,9 @@ class MainWindow(QMainWindow):
 
     def toggle_fullscreen(self):
         self.fullscreen = not self.fullscreen
-        for w in (self.sidebar, self.chan_panel, self.controls):
+        if self.fullscreen:
+            self.show_player()
+        for w in (self.chan_panel, self.controls):
             w.setVisible(not self.fullscreen)
         if self.fullscreen:
             self._was_maximized = self.isMaximized()
@@ -2631,7 +3018,7 @@ class MainWindow(QMainWindow):
             self.cc_btn.setChecked(False)
             QMessageBox.information(
                 self, "Legendas traduzidas",
-                "Esta versão do IPTV Player não inclui a IA de legendas.\n\n"
+                "Esta versão do PudimFlix não inclui a IA de legendas.\n\n"
                 f"Para usar pelo código-fonte, instale:  pip install {' '.join(missing_deps())}")
             return
         for b in (self.cc_btn, self.overlay.cc_btn):
@@ -2697,6 +3084,8 @@ class MainWindow(QMainWindow):
         self.dubber.status.connect(lambda t: self._info(t, 8) if t else self.info_lbl.setText(""))
 
     def _start_caption_worker(self):
+        if self.theme_ai and self.theme_ai.isRunning():
+            self.theme_ai.stop()  # libera a placa de vídeo para a IA de legendas
         w = CaptionWorker(self.cfg["cap_model"], self.cfg["cap_source"], self.cfg["cap_translator"])
         w.caption.connect(self._on_caption)
         w.partial.connect(lambda _o, t: self.cc_btn.isChecked() and self.subs.set_preview(t))
@@ -2822,7 +3211,7 @@ class MainWindow(QMainWindow):
         tag = self.cfg["latest_version"]
         mb = self.cfg["update_size"] / 1e6
         if QMessageBox.question(
-                self, "Atualizar o IPTV Player",
+                self, "Atualizar o PudimFlix",
                 f"Baixar e instalar a versão {tag} agora ({mb:.0f} MB)?\n\n"
                 "Quando o download terminar, o programa fecha, instala a versão nova "
                 "e abre de novo sozinho. Seus favoritos e configurações continuam.") \
@@ -2884,6 +3273,10 @@ class MainWindow(QMainWindow):
 
     # ================================================================ encerramento
     def closeEvent(self, e):
+        if self.theme_ai:
+            self.theme_ai.stop()
+            self.theme_ai.wait(15000)
+        themes.save_ai_cache(self.theme_ai_cache)
         self._save_resume()
         self.health.save(force=True)
         self.scanner.stop()

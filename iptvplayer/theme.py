@@ -111,6 +111,20 @@ QMenu::item {{ padding: 6px 22px 6px 12px; border-radius: 6px; }}
 QMenu::item:selected {{ background: {t['accent']}; color: white; }}
 QMenu::separator {{ height: 1px; background: {t['border']}; margin: 4px 6px; }}
 QToolTip {{ background: {t['surface2']}; color: {t['text']}; border: 1px solid {t['border']}; padding: 4px; }}
+QWidget#home, QScrollArea#homeScroll, QWidget#homeBody {{ background: {t['bg']}; border: none; }}
+QWidget#homeBar {{ background: {t['bg']}; border-bottom: 1px solid {t['border']}; }}
+QWidget#hero {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {t['surface2']}, stop:1 {t['bg']});
+    border: 1px solid {t['border']}; border-radius: 18px; }}
+QLabel#heroKicker {{ color: {t['accent']}; font-size: 9pt; font-weight: 700; letter-spacing: 1px; }}
+QLabel#heroTitle {{ font-size: 24pt; font-weight: 700; color: {t['strong']}; }}
+QLabel#heroSub {{ color: {t['muted']}; font-size: 11pt; }}
+QLabel#rowTitle {{ font-size: 13.5pt; font-weight: 700; color: {t['strong']}; }}
+QPushButton#link {{ background: transparent; border: none; color: {t['muted']}; padding: 4px 8px; }}
+QPushButton#link:hover {{ color: {t['accent']}; }}
+QPushButton#big {{ background: {gradient_css()}; border: none; color: white; font-weight: 700;
+    font-size: 11pt; border-radius: 10px; padding: 10px 22px; }}
+QPushButton#ghost {{ background: {t['surface']}; border: 1px solid {t['border']}; font-size: 11pt;
+    border-radius: 10px; padding: 10px 18px; }}
 QTabWidget::pane {{ border: none; }}
 QTabBar::tab {{ background: transparent; color: {t['muted']}; border: none; border-bottom: 2px solid {t['border']};
     padding: 7px 14px; margin-right: 2px; }}
@@ -151,6 +165,9 @@ ICONS = {
     "timer": '<circle cx="12" cy="13.5" r="7.5"/><path d="M12 10v3.5l2.5 2M9.5 2.5h5M12 2.5V6"/>',
     "refresh": '<path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/>',
     "plus": '<path d="M12 5v14M5 12h14"/>',
+    "chev_left": '<path d="M15 5l-7 7 7 7"/>',
+    "chev_right": '<path d="M9 5l7 7-7 7"/>',
+    "home": '<path d="M3.5 11L12 4l8.5 7"/><path d="M6 9.5V20h12V9.5"/><path d="M10 20v-5h4v5"/>',
     "settings": '<path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/>'
                 '<circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/>',
     "search": '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/>',
@@ -230,21 +247,61 @@ def icon(name, color="text", size=20):
     return QIcon(icon_pixmap(name, color_of(color), size))
 
 
-def app_icon(size=256):
+def app_icon_pixmap(size=256):
+    """Ícone do PudimFlix: um pudim com calda de caramelo num pratinho (desenhado numa grade de 64x64)."""
     pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.scale(size / 64, size / 64)  # desenho definido numa grade de 64x64
-    g = QLinearGradient(0, 0, 64, 64)
-    g.setColorAt(0, QColor("#7c5cff"))
-    g.setColorAt(1, QColor("#22c1ee"))
-    path = QPainterPath()
-    path.addRoundedRect(4, 8, 56, 42, 10, 10)
-    p.fillPath(path, g)
-    p.setBrush(QColor("white"))
+    p.scale(size / 64, size / 64)
     p.setPen(Qt.PenStyle.NoPen)
-    p.drawPolygon([QPointF(26, 19), QPointF(26, 39), QPointF(42, 29)])
-    p.fillRect(22, 53, 20, 4, g)
+    # prato
+    p.setBrush(QColor(0, 0, 0, 60))
+    p.drawEllipse(QPointF(32, 55.5), 29, 6)
+    plate = QLinearGradient(0, 48, 0, 60)
+    plate.setColorAt(0, QColor("#ffffff"))
+    plate.setColorAt(1, QColor("#c9d0de"))
+    p.setBrush(plate)
+    p.drawEllipse(QPointF(32, 53.5), 29, 6)
+    # corpo do pudim (tronco de cone)
+    body = QPainterPath()
+    body.moveTo(17, 20)
+    body.lineTo(47, 20)
+    body.cubicTo(50, 34, 53, 44, 55, 51)
+    body.cubicTo(45, 56, 19, 56, 9, 51)
+    body.cubicTo(11, 44, 14, 34, 17, 20)
+    g = QLinearGradient(9, 0, 55, 0)
+    g.setColorAt(0, QColor("#f0a93a"))
+    g.setColorAt(0.45, QColor("#ffd772"))
+    g.setColorAt(1, QColor("#e8972c"))
+    p.fillPath(body, g)
+    # calda de caramelo escorrendo
+    cal = QPainterPath()
+    cal.moveTo(16, 21)
+    cal.cubicTo(16, 13, 48, 13, 48, 21)
+    cal.lineTo(49.5, 29)
+    cal.cubicTo(49.5, 33, 45.5, 33, 45.5, 29)
+    cal.lineTo(44.5, 26)
+    cal.cubicTo(42, 27, 40, 27, 38.5, 26.5)
+    cal.lineTo(38.5, 34)
+    cal.cubicTo(38.5, 38.5, 33.5, 38.5, 33.5, 34)
+    cal.lineTo(33.5, 27)
+    cal.cubicTo(29, 27.5, 25, 27.5, 22.5, 26.5)
+    cal.lineTo(21.5, 31)
+    cal.cubicTo(21, 35, 16.5, 35, 16.8, 31)
+    cal.lineTo(16, 21)
+    cg = QLinearGradient(0, 13, 0, 36)
+    cg.setColorAt(0, QColor("#a8481a"))
+    cg.setColorAt(1, QColor("#6e2a0c"))
+    p.fillPath(cal, cg)
+    # brilho
+    p.setBrush(QColor(255, 255, 255, 150))
+    p.drawEllipse(QPointF(26, 17.5), 5, 1.8)
+    p.setBrush(QColor(255, 255, 255, 90))
+    p.drawEllipse(QPointF(14.5, 42), 1.6, 5)
     p.end()
-    return QIcon(pm)
+    return pm
+
+
+def app_icon(size=256):
+    return QIcon(app_icon_pixmap(size))

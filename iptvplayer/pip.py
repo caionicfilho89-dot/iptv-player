@@ -28,7 +28,7 @@ class PipWindow(QWidget):
     def __init__(self):
         super().__init__(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
                          | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
-        self.setWindowTitle("IPTV Player — mini")
+        self.setWindowTitle("PudimFlix — mini")
         self.setMinimumSize(280, 190)
         self.closing = False  # True quando o próprio app fecha a janela
         lay = QVBoxLayout(self)
