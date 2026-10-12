@@ -17,6 +17,9 @@ RECURSOS
 - Guia de programação: o que está passando agora e a seguir
 - Pular canais offline e zapping automático (também só pelos favoritos)
 - Explorar: percorre sozinho todos os canais de todas as listas, sem repetir os já vistos
+- Último canal (Ctrl+B) e Surpresa: um canal aleatório da lista (Ctrl+Shift+S)
+- Brasil primeiro: canais brasileiros no topo de qualquer lista
+- Retrospectiva: seus canais mais vistos, tempo de TV e conquistas (Ctrl+Shift+H)
 - Listas atualizadas todo dia; canais novos ganham o selo NOVO e a categoria Novos
 - Link fora do ar? O app procura sozinho outro link do mesmo canal
 - Modo lista ou grade, tema claro/escuro e 6 cores de destaque
@@ -30,7 +33,7 @@ ATALHOS
 0-9 ................. ir para o canal pelo número
 PgUp / PgDn ......... canal anterior / próximo
 F11 / duplo clique .. tela cheia (Esc para sair)
-Ctrl+F busca · Ctrl+D favorito · Ctrl+M mudo · Ctrl+Z zapping · Ctrl+E explorar
+Ctrl+F busca · Ctrl+D favorito · Ctrl+M mudo · Ctrl+Z zapping · Ctrl+E explorar · Ctrl+B último canal
 Ctrl+G guia · Ctrl+S foto · Ctrl+R gravar · Ctrl+P janela flutuante · Ctrl+L lista/grade · Ctrl+T legendas · Ctrl+Shift+A áudio
 
 Fotos vão para Imagens\IPTV Player e gravações para Vídeos\IPTV Player.

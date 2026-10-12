@@ -48,8 +48,8 @@ _SAMSUNG = ("br", "pt", "us", "mx", "ca", "uk", "ie", "es", "fr", "it", "de", "a
 _RAKUTEN = ("es", "uk", "fr", "it", "de", "fi", "pl")
 # chave, rótulo, ícone, listas, guias de programação
 FAST = [
-    ("pluto_br", "Pluto TV Brasil", "tv", _streams("br_pluto"), (MJH + "PlutoTV/br.xml.gz",)),
-    ("pluto", "Pluto TV (mundo)", "tv", _streams(*(c + "_pluto" for c in _PLUTO)), (MJH + "PlutoTV/us.xml.gz",)),
+    ("pluto", "Pluto TV", "tv", _streams("br_pluto", *(c + "_pluto" for c in _PLUTO)),
+     (MJH + "PlutoTV/br.xml.gz", MJH + "PlutoTV/us.xml.gz")),  # Brasil + mundo numa lista só (BR primeiro)
     ("samsung", "Samsung TV Plus", "tv", _streams(*(c + "_samsung" for c in _SAMSUNG)),
      (MJH + "SamsungTVPlus/us.xml.gz",)),
     ("rakuten", "Rakuten TV", "tv", _streams(*(c + "_rakuten" for c in _RAKUTEN)), ()),
@@ -66,6 +66,16 @@ BUILTIN += [(k, label, ic, remote) for k, label, ic, remote, _epg in FAST]
 FAST_KEYS = {f[0] for f in FAST}
 FAST_EPG = {f[0]: list(f[4]) for f in FAST}
 BUILTIN_KEYS = {b[0] for b in BUILTIN}
+
+# organização do menu lateral: cada seção com as categorias que pertencem a ela, em ordem
+NAV_GROUPS = [
+    ("Destaques", ["melhor_iptv", "todos"]),
+    ("Países", ["brasil", "portugal", "português"]),
+    ("Categorias", ["filmes", "series", "esportes", "notícias", "documentários",
+                    "música", "infantil", "religiosos", "gerais"]),
+    ("Idiomas", ["english", "español"]),
+    ("Mundo aberto", ["mundo"]),
+]
 
 
 def builtin_entries():

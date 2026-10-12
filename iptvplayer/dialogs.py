@@ -641,3 +641,87 @@ class GuideDialog(QDialog):
         close.clicked.connect(dlg.accept)
         v.addLayout(_row(rm, close))
         dlg.exec()
+
+
+class StatsDialog(QDialog):
+    """Retrospectiva: canais mais assistidos, tempo total e conquistas."""
+
+    def __init__(self, cfg, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Sua retrospectiva")
+        self.setMinimumWidth(460)
+        v = QVBoxLayout(self)
+        v.setSpacing(10)
+
+        stats = cfg["stats"] if isinstance(cfg["stats"], dict) else {}
+        entries = [e for e in stats.values() if isinstance(e, dict) and e.get("secs")]
+        total = sum(int(e.get("secs", 0)) for e in entries)
+        plays = sum(int(e.get("count", 0)) for e in entries)
+        distinct = len(entries)
+
+        title = QLabel("🏆  Sua retrospectiva")
+        title.setStyleSheet("font-size:20px; font-weight:bold;")
+        v.addWidget(title)
+
+        resumo = QLabel(f"⏱️  {self._dur(total)} assistidas   ·   📺  {distinct} canais   ·   🔀  {plays} trocas")
+        resumo.setStyleSheet("color:%s;" % T.get("muted", "#888"))
+        v.addWidget(resumo)
+
+        # canal do mês: mais assistido nos últimos 30 dias
+        mes = [e for e in entries if time.time() - int(e.get("last", 0)) <= 30 * 86400]
+        if mes:
+            top_mes = max(mes, key=lambda e: e.get("secs", 0))
+            lbl = QLabel(f"⭐  <b>Canal do mês:</b> {top_mes.get('name', '?')} "
+                         f"({self._dur(top_mes.get('secs', 0))})")
+            lbl.setTextFormat(Qt.TextFormat.RichText)
+            v.addWidget(lbl)
+
+        v.addWidget(QLabel("<b>Mais assistidos</b>"))
+        lst = QListWidget()
+        lst.setStyleSheet("QListWidget{border:none;}")
+        for i, e in enumerate(sorted(entries, key=lambda e: -e.get("secs", 0))[:10], 1):
+            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
+            lst.addItem(f"{medal}  {e.get('name', '?')}  —  {self._dur(e.get('secs', 0))}")
+        if not entries:
+            lst.addItem("Assista alguns canais e volte aqui 📺")
+        v.addWidget(lst, 1)
+
+        conquistas = self._achievements(distinct, plays, total, entries)
+        if conquistas:
+            v.addWidget(QLabel("<b>Conquistas</b>"))
+            box = QLabel("   ".join(conquistas))
+            box.setWordWrap(True)
+            box.setStyleSheet("font-size:15px;")
+            v.addWidget(box)
+
+        close = QPushButton("Fechar")
+        close.clicked.connect(self.accept)
+        v.addLayout(_row(close))
+
+    @staticmethod
+    def _dur(secs):
+        secs = int(secs or 0)
+        h, m = secs // 3600, (secs % 3600) // 60
+        if h:
+            return f"{h}h{m:02d}min"
+        return f"{m} min" if m else "menos de 1 min"
+
+    @staticmethod
+    def _achievements(distinct, plays, total, entries):
+        out = []
+        best = max((e.get("secs", 0) for e in entries), default=0)
+        if distinct >= 50:
+            out.append("🌍 Desbravador (50 canais)")
+        elif distinct >= 10:
+            out.append("🧭 Explorador (10 canais)")
+        if best >= 3 * 3600:
+            out.append("🍿 Maratonista (3h num canal)")
+        if plays >= 1000:
+            out.append("⚡ Zapeador master (1000 trocas)")
+        elif plays >= 100:
+            out.append("⚡ Zapeador (100 trocas)")
+        if total >= 100 * 3600:
+            out.append("🏆 100 horas de TV")
+        elif total >= 10 * 3600:
+            out.append("📺 10 horas de TV")
+        return out

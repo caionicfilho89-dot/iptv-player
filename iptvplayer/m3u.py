@@ -26,6 +26,21 @@ class Channel:
         return cls(**{k: v for k, v in d.items() if k in names})
 
 
+# marcas que indicam um canal brasileiro (nome do grupo, nome do canal ou tvg_id .br)
+_BR_WORDS = ("brasil", "brazil", "brazilian")
+_BR_TOKEN_RE = re.compile(r"(?:^|[\s\(\[|:_-])br(?:$|[\s\)\]|:_-])", re.IGNORECASE)
+
+
+def is_brazilian(ch):
+    """True se o canal parece ser do Brasil (para priorizá-lo na lista)."""
+    if (ch.tvg_id or "").lower().endswith(".br"):
+        return True
+    blob = f"{ch.group} {ch.name}".lower()
+    if any(w in blob for w in _BR_WORDS):
+        return True
+    return bool(_BR_TOKEN_RE.search(ch.group or ""))
+
+
 EXTINF_RE = re.compile(r'^#EXTINF:\s*-?\d+((?:\s+[\w-]+="[^"]*")*)\s*,(.*)$')
 ATTR_RE = re.compile(r'([\w-]+)="([^"]*)"')
 QUALITY_RE = re.compile(r"\((\d{3,4}[pi])\)")

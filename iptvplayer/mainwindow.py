@@ -33,7 +33,7 @@ from .epg import EpgManager
 from .epggrid import EpgGridDialog
 from .health import Health
 from .log import log
-from .m3u import Channel, header_epg_urls, parse_m3u
+from .m3u import Channel, header_epg_urls, is_brazilian, parse_m3u
 from .mosaic import MosaicWindow
 from .net import ListDownloader, LogoLoader, Scanner, make_request
 from .pip import PipWindow
@@ -56,7 +56,7 @@ VOD_REFRESH = 3 * 86400      # filmes e séries de uma conta Xtream são baixado
 MAX_CONSECUTIVE_FAILS = 25   # evita loop infinito pulando canais
 LIST_MAX_AGE = 86400          # atualização automática das listas (1× por dia)
 UPDATE_CHECK_EVERY = 12 * 3600
-COMPACT_BELOW = 1340         # largura da janela abaixo da qual a barra lateral vira só ícones
+COMPACT_BELOW = 1080         # largura da janela abaixo da qual a barra lateral vira só ícones
 LABEL_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
@@ -447,6 +447,12 @@ class MainWindow(QMainWindow):
                                     text="  Explorar", checkable=True, icon_size=17)
         self.explore_btn.toggled.connect(self._toggle_explore)
         auto.addWidget(self.explore_btn)
+        self.last_btn = make_btn("refresh", "Voltar ao último canal assistido (Ctrl+B)", self.last_channel,
+                                 kind="", text="  Último", icon_size=16)
+        auto.addWidget(self.last_btn)
+        self.surprise_btn = make_btn("smile", "Surpreenda-me: toca um canal aleatório (Ctrl+Shift+S)",
+                                     self.surprise, kind="", text="  Surpresa", icon_size=16)
+        auto.addWidget(self.surprise_btn)
         self.zap_lbl = QLabel("", objectName="muted")
         self.zap_lbl.setMinimumWidth(30)
         auto.addWidget(self.zap_lbl)
@@ -472,7 +478,9 @@ class MainWindow(QMainWindow):
         self.mosaic_btn = make_btn("mosaic", "Mosaico: vários canais ao mesmo tempo", self.open_mosaic,
                                    kind="tool", icon_size=18)
         self.sleep_btn = make_btn("timer", "Timer para desligar", self._sleep_menu, kind="tool", icon_size=18)
-        for b in (self.cc_btn, self.dub_btn, self.tracks_btn, self.guide_btn, self.snap_btn, self.rec_btn, self.pip_btn, self.mosaic_btn, self.sleep_btn):
+        self.stats_btn = make_btn("trophy", "Retrospectiva: seus canais mais vistos e conquistas (Ctrl+Shift+H)",
+                                  self.open_stats, kind="tool", icon_size=18)
+        for b in (self.cc_btn, self.dub_btn, self.tracks_btn, self.guide_btn, self.snap_btn, self.rec_btn, self.pip_btn, self.mosaic_btn, self.sleep_btn, self.stats_btn):
             auto.addWidget(b)
         self.sleep_lbl = QLabel("", objectName="muted")
         auto.addWidget(self.sleep_lbl)
@@ -510,7 +518,7 @@ class MainWindow(QMainWindow):
 
     def _narrow_screen(self):
         screen = self.screen() or QGuiApplication.primaryScreen()
-        return screen.availableGeometry().width() < 1400
+        return screen.availableGeometry().width() < 1120
 
     def _shortcuts(self):
         def sc(keys, fn):
@@ -537,6 +545,9 @@ class MainWindow(QMainWindow):
         sc("Ctrl+Right", lambda: self.seek_relative(+30))
         sc("Ctrl+End", self.go_live)
         sc("Ctrl+E", self.explore_btn.toggle)
+        sc("Ctrl+B", self.last_channel)
+        sc("Ctrl+Shift+S", self.surprise)
+        sc("Ctrl+Shift+H", self.open_stats)
 
     def _escape(self):
         if self.num_buffer:
@@ -605,15 +616,28 @@ class MainWindow(QMainWindow):
             add(src.FAV_KEY, "Favoritos", "star")
             add(src.RECENT_KEY, "Recentes", "clock")
             add(src.NEW_KEY, f"Novos ({len(self.newch)})" if len(self.newch) else "Novos", "sparkle")
-            section("Canais")
             entries = src.builtin_entries()
-            for key, label, ic in entries:
-                if key not in src.FAST_KEYS:
-                    add(key, label, ic)
-            section("Grátis com propaganda")
-            for key, label, ic in entries:
-                if key in src.FAST_KEYS:
-                    add(key, label, ic)
+            emap = {k: (k, label, ic) for k, label, ic in entries}
+            shown = set()
+            for title, keys in src.NAV_GROUPS:
+                group = [emap[k] for k in keys if k in emap]
+                if not group:
+                    continue
+                section(title)
+                for k, label, ic in group:
+                    add(k, label, ic)
+                    shown.add(k)
+            extras = [(k, label, ic) for k, label, ic in entries
+                      if k not in shown and k not in src.FAST_KEYS]
+            if extras:
+                section("Outros")
+                for k, label, ic in extras:
+                    add(k, label, ic)
+            fast = [(k, label, ic) for k, label, ic in entries if k in src.FAST_KEYS]
+            if fast:
+                section("Grátis com propaganda")
+                for k, label, ic in fast:
+                    add(k, label, ic)
         if self.cfg["custom_sources"] and not self.cfg["kids"]:
             section("Minhas listas")
             for s in self.cfg["custom_sources"]:
@@ -739,7 +763,10 @@ class MainWindow(QMainWindow):
                         and (not grp or c.group == grp)
                         and not (hide and self.status_of(c.url) == "dead")]
         mode = self.cfg["sort_mode"]
-        if mode == "stable":
+        if mode == "brasil":
+            # ordenação estável: canais do Brasil sobem para o topo, o resto mantém a ordem original
+            self.visible.sort(key=lambda c: not is_brazilian(c))
+        elif mode == "stable":
             def rank(c):
                 s = self.health.score(c.url)
                 return (self.status_of(c.url) == "dead", -(0.5 if s is None else s))
@@ -766,7 +793,8 @@ class MainWindow(QMainWindow):
 
     def _sort_menu(self):
         m = QMenu(self)
-        for mode, label in (("list", "Ordem da lista"), ("stable", "Mais estáveis primeiro"), ("name", "Nome (A–Z)")):
+        for mode, label in (("brasil", "Brasil primeiro"), ("list", "Ordem da lista"),
+                            ("stable", "Mais estáveis primeiro"), ("name", "Nome (A–Z)")):
             a = m.addAction(label, lambda md=mode: self._set_sort(md))
             a.setCheckable(True)
             a.setChecked(self.cfg["sort_mode"] == mode)
@@ -1044,6 +1072,9 @@ class MainWindow(QMainWindow):
         log.info("Tocando: %s — %s", ch.name, xtream.redact(stream[0] if stream else ch.url))
         if not auto:
             self.fail_streak = 0
+        if self.current and self.current.url != ch.url:
+            self._record_watch()          # soma o tempo do canal que estava tocando
+            self._prev_ch = self.current  # para o botão "voltar ao último canal"
         self.vod = None
         self.current = ch
         self.retried = False
@@ -1682,6 +1713,7 @@ class MainWindow(QMainWindow):
 
     def stop(self):
         self._save_resume()
+        self._record_watch()
         self.vod = None
         self.player.stop()
         self.timeshift.close()
@@ -2294,6 +2326,41 @@ class MainWindow(QMainWindow):
         rec = [r for r in self.cfg["recents"] if r["url"] != ch.url]
         rec.insert(0, ch.__dict__.copy())
         self.cfg["recents"] = rec[:40]
+
+    # ================================================================ último canal, surpresa e retrospectiva
+    def _record_watch(self):
+        """Soma o tempo assistido do canal atual na retrospectiva (só canais ao vivo que abriram)."""
+        ch = self.current
+        if not ch or self.vod or ch.kind in ("movie", "series", "episode"):
+            return
+        secs = time.monotonic() - getattr(self, "started_at", time.monotonic())
+        if secs < 15 or not getattr(self, "confirmed", False):
+            return  # ignora zaps rápidos e canais que nem chegaram a abrir
+        st = self.cfg["stats"]
+        e = st.get(ch.url) or {"name": ch.name, "logo": ch.logo, "secs": 0, "count": 0, "last": 0}
+        e["name"], e["logo"] = ch.name, ch.logo
+        e["secs"] = int(e.get("secs", 0)) + int(secs)
+        e["count"] = int(e.get("count", 0)) + 1
+        e["last"] = int(time.time())
+        st[ch.url] = e
+
+    def last_channel(self):
+        ch = getattr(self, "_prev_ch", None)
+        if ch:
+            self.play(ch, force=True)
+        else:
+            self._info("Ainda não há um canal anterior para voltar.")
+
+    def surprise(self):
+        """Sorteia um canal da lista atual e já começa a tocar."""
+        if not self.visible:
+            return self._info("Abra uma lista de canais primeiro.")
+        self._info("🎲 Surpresa!", 2)
+        self.step(0, random_pick=True)
+
+    def open_stats(self):
+        from .dialogs import StatsDialog
+        StatsDialog(self.cfg, self).exec()
 
     def _context_menu(self, pos):
         idx = self.view.indexAt(pos)

@@ -26,7 +26,7 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 - Listas por categoria (Brasil, Português, Filmes, Séries, Esportes, Notícias, Infantil…) **atualizadas
   automaticamente** a partir do [iptv-org](https://github.com/iptv-org/iptv)
 - **Mundo (Free-TV)**: mais ~1.300 canais abertos do mundo todo, da lista [Free-TV](https://github.com/Free-TV/IPTV)
-- **Grátis com propaganda** 🆕: Pluto TV Brasil, Pluto TV (mundo), Samsung TV Plus, Rakuten TV, Plex, Roku, Tubi,
+- **Grátis com propaganda**: Pluto TV (Brasil e mundo numa lista só), Samsung TV Plus, Rakuten TV, Plex, Roku, Tubi,
   Xumo, Stirr, Vizio, TCL e Distro — canais oficiais de todos os países, com guia de programação; o programa testa
   sozinho e mostra só os que estão no ar
 - **Estabilidade dos canais** 🆕: barrinhas de sinal mostram quais canais costumam abrir e não travar, e a lista pode
@@ -45,6 +45,9 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
   com `catchup=`)
 - **Guia de programação (EPG)**: o que está passando agora e a seguir, com barra de progresso
 - Busca, filtro por grupo, favoritos ⭐ e recentes
+- **Brasil primeiro** 🆕: em qualquer lista, os canais brasileiros aparecem no topo (botão de ordenar no topo da
+  lista: Brasil primeiro, ordem da lista, mais estáveis ou A–Z)
+- **Menu organizado** 🆕 em Destaques, Países, Categorias, Idiomas, Mundo aberto e Grátis com propaganda
 - **Listas atualizadas todo dia**, com os canais que chegaram marcados como **NOVO** e reunidos na categoria **Novos**
 - **Links quebrados trocados sozinhos**: se um canal cai, o app procura o mesmo canal em outro link (em qualquer lista), usa o que funcionar e lembra dele
 
@@ -53,6 +56,8 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 - **Zapping automático** a cada N segundos, em ordem ou aleatório, também **só pelos favoritos**
 - **Botão "1 min"**: rolagem automática que passa para o próximo canal da lista a cada minuto
 - **Explorar**: passa sozinho por **todos os canais de todas as listas**, pulando os offline e os que você já viu; a lista rola acompanhando
+- **Último canal** 🆕: volta para o canal que você estava vendo antes (botão **Último** ou `Ctrl+B`)
+- **Surpresa** 🆕: sorteia um canal da lista e já começa a tocar (botão **Surpresa** ou `Ctrl+Shift+S`)
 - **Testar lista**: descobre em segundo plano quais canais estão no ar
 - **Teste automático** 🆕: a cada 6 horas o programa testa todos os canais e esconde os fora do ar
 - **Canais repetidos juntados** 🆕: o mesmo canal em SD/HD ou em listas diferentes aparece uma vez só (os outros
@@ -84,6 +89,8 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 
 **Visual**
 - Modo **lista** ou **grade**, tema **escuro** ou **claro** e 6 cores de destaque
+- **Retrospectiva** 🆕: seus canais mais assistidos com medalhas, tempo total de TV, canal do mês e conquistas
+  (botão do troféu ou `Ctrl+Shift+H`)
 - **Atualização com um clique**: quando sai uma versão nova, um clique baixa, instala e reabre o programa
 - **Registro de erros** (Configurações → Abrir registro de erros), para descobrir por que algo não funcionou
 
@@ -103,6 +110,9 @@ Baixe na página de **[Releases](https://github.com/caionicfilho89-dot/iptv-play
 | `Ctrl+Z` | Liga/desliga o zapping |
 | `Ctrl+Shift+Z` | Liga/desliga a rolagem automática de 1 minuto |
 | `Ctrl+E` | Liga/desliga o modo Explorar |
+| `Ctrl+B` | Voltar ao último canal |
+| `Ctrl+Shift+S` | Surpresa: canal aleatório |
+| `Ctrl+Shift+H` | Retrospectiva |
 | `Ctrl+G` | Guia de programação |
 | `Ctrl+Shift+G` | Grade de programação de todos os canais |
 | `Ctrl+S` | Foto da tela |

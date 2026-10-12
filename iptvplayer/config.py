@@ -2,7 +2,7 @@
 import json
 import time
 
-from .paths import CONFIG_FILE
+from .paths import CONFIG_FILE, LIST_CACHE
 
 DEAD_TTL = 6 * 3600  # canal marcado offline fica assim por 6h
 
@@ -29,7 +29,8 @@ DEFAULTS = {
     "timeshift": True, "timeshift_minutes": 30,
     "schedule": [],
     "resume": {},  # onde parou em filmes/episódios: {url: [segundos (-1 = assistido), duração, quando]}
-    "sort_mode": "list",  # list, stable (mais estáveis primeiro) ou name
+    "sort_mode": "brasil",  # brasil (BR primeiro), list, stable (mais estáveis primeiro) ou name
+    "stats": {},  # retrospectiva: {url: {"name","logo","secs","count","last"}}
     "tracks": {},  # áudio/legenda escolhidos por canal: {url: {"audio": nome, "spu": nome ou ""}}
     "remote": False, "remote_key": "",
     "auto_scan": True, "last_full_scan": 0, "merge_dupes": True,
@@ -57,6 +58,22 @@ class Config:
         if not isinstance(self.data.get("dead"), dict):
             self.data["dead"] = {}
         self.prune_dead()
+        self._migrate()
+
+    def _migrate(self):
+        """v1.11: a "Pluto TV Brasil" virou parte da "Pluto TV" (Brasil + mundo numa lista só)."""
+        if self.data.get("last_category") == "pluto_br":
+            self.data["last_category"] = "pluto"
+        kids = self.data.get("kids_cats")
+        if isinstance(kids, list) and "pluto_br" in kids:
+            self.data["kids_cats"] = list(dict.fromkeys("pluto" if k == "pluto_br" else k for k in kids))
+        old = LIST_CACHE / "pluto_br.m3u"
+        if old.exists():  # a "pluto.m3u" antiga só tem o mundo: baixa de novo a lista unificada
+            for f in (old, LIST_CACHE / "pluto.m3u"):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
 
     def prune_dead(self):
         """Esquece as marcas de offline vencidas; devolve quantos canais voltaram."""
