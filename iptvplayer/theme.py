@@ -4,16 +4,16 @@ from PyQt6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPainterPath, 
 from PyQt6.QtSvg import QSvgRenderer
 
 ACCENTS = {
-    "violet": ("Roxo", "#7c5cff", "#22c1ee"),
-    "blue": ("Azul", "#3b82f6", "#06b6d4"),
-    "green": ("Verde", "#10b981", "#84cc16"),
-    "orange": ("Laranja", "#f97316", "#facc15"),
-    "pink": ("Rosa", "#ec4899", "#8b5cf6"),
-    "red": ("Vermelho", "#ef4444", "#f97316"),
+    "violet": ("Roxo", "#8b5cff", "#22d3ee"),
+    "blue": ("Azul", "#3d8bff", "#00e1ff"),
+    "green": ("Verde", "#00d98b", "#b4f527"),
+    "orange": ("Laranja", "#ff7a1a", "#ffd23f"),
+    "pink": ("Rosa", "#ff3d9a", "#a855f7"),
+    "red": ("Vermelho", "#ff3b4e", "#ff9500"),
 }
 
 DARK = {
-    "bg": "#0e1016", "panel": "#141821", "surface": "#1b202b", "surface2": "#232a38",
+    "bg": "#0b0d14", "panel": "#10131c", "surface": "#191e2b", "surface2": "#222a3b",
     "border": "#262d3b", "border_hover": "#34405a", "text": "#e7e9f0", "muted": "#8a93a8",
     "strong": "#ffffff", "logo_bg": "#0a0c11", "scroll": "#2c3446", "check_border": "#3a4459",
     "ok": "#3ddc97", "warn": "#ffb84d", "bad": "#ff5d6c", "star": "#ffd166",
@@ -42,8 +42,21 @@ def gradient_css(x2=1, y2=0):
             f"stop:0 {T['accent']}, stop:1 {T['accent2']})")
 
 
+def rgba(hex_color, alpha):
+    """Cor do tema com transparência (0-255), no formato da folha de estilo."""
+    c = QColor(hex_color)
+    return f"rgba({c.red()}, {c.green()}, {c.blue()}, {alpha})"
+
+
+def display_font():
+    """Fonte dos títulos grandes: a "Display" do Windows 11 quando existe."""
+    from PyQt6.QtGui import QFontDatabase
+    return "Segoe UI Variable Display" if "Segoe UI Variable Display" in QFontDatabase.families() else "Segoe UI"
+
+
 def build_style():
     t = T
+    disp = display_font()
     return f"""
 * {{ font-family: 'Segoe UI'; font-size: 10pt; color: {t['text']}; }}
 QMainWindow, QDialog, QWidget#root {{ background: {t['bg']}; }}
@@ -111,20 +124,48 @@ QMenu::item {{ padding: 6px 22px 6px 12px; border-radius: 6px; }}
 QMenu::item:selected {{ background: {t['accent']}; color: white; }}
 QMenu::separator {{ height: 1px; background: {t['border']}; margin: 4px 6px; }}
 QToolTip {{ background: {t['surface2']}; color: {t['text']}; border: 1px solid {t['border']}; padding: 4px; }}
-QWidget#home, QScrollArea#homeScroll, QWidget#homeBody {{ background: {t['bg']}; border: none; }}
+QWidget#home, QScrollArea#homeScroll {{ background: {t['bg']}; border: none; }}
+QWidget#homeBody {{ border: none; background: qlineargradient(x1:0,y1:0,x2:0.35,y2:1, stop:0 {rgba(t['accent'], 26)},
+    stop:0.12 {t['bg']}, stop:1 {t['bg']}); }}
 QWidget#homeBar {{ background: {t['bg']}; border-bottom: 1px solid {t['border']}; }}
 QWidget#hero {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {t['surface2']}, stop:1 {t['bg']});
     border: 1px solid {t['border']}; border-radius: 18px; }}
-QLabel#heroKicker {{ color: {t['accent']}; font-size: 9pt; font-weight: 700; letter-spacing: 1px; }}
-QLabel#heroTitle {{ font-size: 24pt; font-weight: 700; color: {t['strong']}; }}
+QLabel#heroKicker {{ color: {t['accent2'] if t['mode'] == 'dark' else t['accent']}; font-size: 9pt; font-weight: 800; letter-spacing: 2px; }}
+QLabel#heroTitle {{ font-family: '{disp}'; font-size: 28pt; font-weight: 800; color: {t['strong']}; }}
 QLabel#heroSub {{ color: {t['muted']}; font-size: 11pt; }}
-QLabel#rowTitle {{ font-size: 13.5pt; font-weight: 700; color: {t['strong']}; }}
+QLabel#rowTitle {{ font-family: '{disp}'; font-size: 14.5pt; font-weight: 700; color: {t['strong']}; }}
 QPushButton#link {{ background: transparent; border: none; color: {t['muted']}; padding: 4px 8px; }}
 QPushButton#link:hover {{ color: {t['accent']}; }}
 QPushButton#big {{ background: {gradient_css()}; border: none; color: white; font-weight: 700;
-    font-size: 11pt; border-radius: 10px; padding: 10px 22px; }}
-QPushButton#ghost {{ background: {t['surface']}; border: 1px solid {t['border']}; font-size: 11pt;
-    border-radius: 10px; padding: 10px 18px; }}
+    font-size: 11pt; border-radius: 12px; padding: 11px 26px; }}
+QPushButton#big:hover {{ background: {t['accent']}; }}
+QPushButton#ghost {{ background: {rgba(t['text'], 28)}; border: 1px solid {rgba(t['text'], 40)}; font-size: 11pt;
+    border-radius: 12px; padding: 11px 20px; color: {t['strong']}; }}
+QPushButton#ghost:hover {{ background: {rgba(t['text'], 50)}; }}
+QWidget#browseSide {{ background: {t['panel']}; border-right: 1px solid {t['border']}; }}
+QLabel#brandBig {{ font-family: '{disp}'; font-size: 17pt; font-weight: 800; color: {t['strong']}; padding-left: 4px; }}
+QPushButton#navBtn {{ background: transparent; border: none; border-radius: 12px; padding: 10px 14px;
+    text-align: left; color: {t['muted']}; font-size: 10.5pt; min-height: 22px; }}
+QPushButton#navBtn:hover {{ background: {t['surface']}; color: {t['text']}; }}
+QPushButton#navBtn:checked {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {rgba(t['accent'], 230)},
+    stop:1 {rgba(t['accent2'], 150)}); color: white; font-weight: 700; }}
+QPushButton#nowBtn {{ background: {gradient_css()}; border: none; border-radius: 12px; padding: 10px 14px;
+    text-align: left; color: white; font-weight: 600; min-height: 22px; margin-bottom: 6px; }}
+QWidget#browseBar {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {rgba(t['accent'], 34)},
+    stop:0.6 {t['bg']}, stop:1 {rgba(t['accent2'], 22)}); }}
+QLineEdit#bigSearch {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 20px;
+    padding: 9px 14px 9px 6px; font-size: 10.5pt; }}
+QLineEdit#bigSearch:focus {{ border: 1px solid {t['accent']}; background: {t['panel']}; }}
+QWidget#chips {{ background: transparent; }}
+QPushButton#chip {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 15px;
+    padding: 5px 15px; min-height: 18px; color: {t['text']}; }}
+QPushButton#chip:hover {{ border-color: {t['accent']}; background: {t['surface2']}; }}
+QPushButton#chip:checked {{ background: {gradient_css()}; border-color: {t['accent']}; color: white; font-weight: 700; }}
+QPushButton#dot {{ background: {rgba(t['text'], 70)}; border: none; border-radius: 4px; min-width: 8px; max-width: 8px;
+    min-height: 8px; max-height: 8px; padding: 0; }}
+QPushButton#dot:checked {{ background: {gradient_css()}; min-width: 26px; max-width: 26px; }}
+QLabel#h1 {{ font-family: '{disp}'; font-size: 22pt; font-weight: 700; color: {t['strong']}; }}
+QLabel#heroMeta {{ color: {t['text']}; font-size: 10.5pt; }}
 QTabWidget::pane {{ border: none; }}
 QTabBar::tab {{ background: transparent; color: {t['muted']}; border: none; border-bottom: 2px solid {t['border']};
     padding: 7px 14px; margin-right: 2px; }}

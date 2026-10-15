@@ -104,8 +104,21 @@ NAV_GROUPS = [
 ]
 
 
+def only_my_lists():
+    """Usa só as listas do usuário: as categorias embutidas e os serviços grátis somem (e não são baixados)."""
+    global BUILTIN, FAST, NAV_GROUPS, FAST_KEYS, BUILTIN_KEYS, ONLY_MINE
+    BUILTIN, FAST, NAV_GROUPS = [], [], []
+    FAST_KEYS, BUILTIN_KEYS = set(), set()
+    ONLY_MINE = True
+
+
+ONLY_MINE = False
+
+
 def builtin_entries():
     """Categorias embutidas + outros .m3u soltos na pasta do programa."""
+    if ONLY_MINE:
+        return []
     out = [(k, label, ic) for k, label, ic, remote in BUILTIN
            if remote or (BASE / f"{k}.m3u").exists() or (LIST_CACHE / f"{k}.m3u").exists()]
     for f in sorted(BASE.glob("*.m3u")):

@@ -36,6 +36,7 @@ DEFAULTS = {
     "remote": False, "remote_key": "",
     "auto_scan": True, "last_full_scan": 0, "merge_dupes": True,
     "kids": False, "kids_pin": "", "kids_cats": ["infantil"],
+    "only_my_lists": False,  # só as listas do usuário (sem as categorias embutidas e serviços grátis)
 }
 
 
@@ -48,6 +49,8 @@ class Config:
             if not isinstance(loaded, dict):
                 raise ValueError("formato inválido")
             self.data.update(loaded)
+            if "only_my_lists" not in loaded and loaded.get("custom_sources") and not loaded.get("auto_update_lists", True):
+                self.data["only_my_lists"] = True  # v1.13: quem já usava uma lista única continua só com ela
         except OSError:
             pass  # primeira execução
         except ValueError:

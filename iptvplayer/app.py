@@ -34,14 +34,17 @@ def main():
     use_windows_tls()
     app.setStyle("Fusion")
     cfg = Config()
+    if cfg["only_my_lists"]:
+        from . import sources
+        sources.only_my_lists()
     apply_theme(cfg["theme"], cfg["accent"])
     app.setStyleSheet(build_style())
     if vlc is None:
         log.error("VLC não encontrado")
         QMessageBox.critical(None, "PudimFlix", VLC_MISSING_MSG)
         sys.exit(1)
-    from .mainwindow import MainWindow
-    w = MainWindow(cfg)
+    from .pudim import PudimWindow
+    w = PudimWindow(cfg)
     w.showMaximized() if w.start_maximized else w.show()
     code = app.exec()
     log.info("Programa fechado")
