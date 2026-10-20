@@ -3,11 +3,12 @@
 Tudo vem do catálogo (catalog.py). A janela principal fornece o catálogo e toca o que for escolhido."""
 import html
 import random
+import time
 
 from PyQt6.QtCore import QAbstractListModel, QEvent, QModelIndex, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import (
-    QButtonGroup, QFrame, QHBoxLayout, QLabel, QLineEdit, QListView, QPushButton, QScrollArea, QSizePolicy,
+    QApplication, QButtonGroup, QFrame, QHBoxLayout, QLabel, QLineEdit, QListView, QPushButton, QScrollArea, QSizePolicy,
     QStackedWidget, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget,
 )
 
@@ -780,6 +781,7 @@ class SeriesView(QWidget):
         self.movie = None       # filme aberto (None = série)
         self.movie_ctx = None   # pasta de onde o filme foi aberto (vira a lista do player)
         self.season = None
+        self._opened_at = 0.0   # o 2º clique de um clique duplo no cartão não pode cair no Assistir
         lay = QVBoxLayout(self)
         lay.setContentsMargins(28, 8, 12, 0)
         lay.setSpacing(12)
@@ -858,8 +860,12 @@ class SeriesView(QWidget):
         self.episodes.clicked.connect(lambda idx: self._play_episode(idx.data(Qt.ItemDataRole.UserRole)))
         lay.addWidget(self.episodes, 1)
 
+    def _just_opened(self):
+        return time.monotonic() - self._opened_at < QApplication.doubleClickInterval() / 1000 + 0.15
+
     def show_node(self, node):
         page = self.page
+        self._opened_at = time.monotonic()
         self.node = node
         self.movie = None
         self.restart_btn.hide()
@@ -897,6 +903,7 @@ class SeriesView(QWidget):
     def show_movie(self, ch, ctx):
         """Filme: sinopse, nota, duração, elenco e os botões Assistir / Do começo / Minha lista."""
         page = self.page
+        self._opened_at = time.monotonic()
         self.movie, self.movie_ctx, self.node = ch, ctx, None
         self.seasons.hide()
         self.episodes.hide()
@@ -1027,6 +1034,8 @@ class SeriesView(QWidget):
         self.episodes.verticalScrollBar().setValue(0)
 
     def _play_main(self):
+        if self._just_opened():
+            return
         if self.movie is not None:
             return self.page.play_movie(self.movie, self.movie_ctx)
         nxt = self.page.next_episode(self.node)
@@ -1034,16 +1043,20 @@ class SeriesView(QWidget):
             self._play_episode(nxt)
 
     def _play_restart(self):
-        if self.movie is not None:
+        if self.movie is not None and not self._just_opened():
             self.page.play_movie(self.movie, self.movie_ctx, from_start=True)
 
     def _play_episode(self, ch):
+        if self._just_opened():
+            return
         self.page.play_episode(self.node, ch)
 
     def _fav_item(self):
         return self.movie if self.movie is not None else self.page.catalog.first(self.node)
 
     def _toggle_fav(self):
+        if self._just_opened():
+            return
         self.page.win.toggle_fav(self._fav_item())
         self._fav_state()
 
@@ -1731,22 +1744,18 @@ class BrowsePage(QWidget):
 
     # --- tocar
     def activate(self, e, ctx):
-        """Cartão clicado: série abre os episódios; filme/canal toca com a pasta dele como lista do player."""
+        """Cartão clicado: série/programa abre a página com os episódios, filme abre a página com capa, sinopse
+        e elenco (de lá o botão Assistir/Continuar toca); só canal ao vivo toca direto."""
         if e is None or self.catalog is None:
             return
         if isinstance(e, CatalogNode):
             return self._go(("series", e))
         path = self.catalog.path_of(e)
         if len(path) >= 3 and (path[0] == cat.SERIES or path[:2] == cat.TV_SHOWS):
-            node = self.catalog.node(path[:3])
-            if ctx in ("Continuar assistindo",):
-                return self.play_episode(node, e)
-            return self._go(("series", node))
+            return self._go(("series", self.catalog.node(path[:3])))
         folder = ctx if isinstance(ctx, tuple) and self.catalog.node(ctx) else path
-        if media_is_video(e) and ctx != "Continuar assistindo":
-            return self._go(("movie", e, folder))   # filme: abre a página com a sinopse
         if media_is_video(e):
-            return self.play_movie(e, folder)
+            return self._go(("movie", e, folder))
         self.win.play_catalog(e, folder)
 
     def play_movie(self, ch, folder, from_start=False):
