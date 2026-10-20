@@ -1185,6 +1185,7 @@ class BrowsePage(QWidget):
         self.meta.series_ready.connect(self._on_series_info)
         self.meta.movie_ready.connect(self._on_movie_info)
         self.history = []        # telas anteriores, para o botão Voltar
+        self.history_pos = []    # onde cada uma estava rolada (volta no mesmo lugar)
         self.state = ("home",)
 
         lay = QHBoxLayout(self)
@@ -1640,7 +1641,8 @@ class BrowsePage(QWidget):
     def _go(self, state, remember=True):
         if remember and state != self.state:
             self.history.append(self.state)
-            del self.history[:-30]
+            self.history_pos.append(self._scroll_pos())
+            del self.history[:-30], self.history_pos[:-30]
         self.state = state
         kind = state[0]
         if kind == "home":
@@ -1676,6 +1678,7 @@ class BrowsePage(QWidget):
         self._clear_search()
         if key == "home":
             self.history.clear()
+            self.history_pos.clear()
             self._go(("home",), remember=False)
             self.home_scroll.verticalScrollBar().setValue(0)
             self.refresh()
@@ -1718,10 +1721,46 @@ class BrowsePage(QWidget):
     def back(self):
         if not self.history:
             return False
+        pos = self.history_pos.pop() if len(self.history_pos) == len(self.history) else None
         self._go(self.history.pop(), remember=False)
         if self.state == ("home",):
             self.refresh()
+        if pos:
+            self._restore_pos(pos)
         return True
+
+    def _scroll_bars(self):
+        """Barras de rolagem da tela atual: a da página e a de cada fileira/grade."""
+        w = self.stack.currentWidget()
+        if w is self.home_scroll:
+            return [self.home_scroll.verticalScrollBar()] + [r.view.horizontalScrollBar() for r in self.rows]
+        if w is self.section:
+            return [self.section.grid.verticalScrollBar(), self.section.grid_wide.verticalScrollBar()]
+        if w is self.results:
+            return [self.results.verticalScrollBar(), self.results.cast_row.view.horizontalScrollBar()] +                 [r.view.horizontalScrollBar() for r in self.results.rows.values()]
+        if w is self.actor:
+            return [self.actor.grid.verticalScrollBar()]
+        if w is self.series:
+            return [self.series.episodes.verticalScrollBar()]
+        return []
+
+    def _scroll_pos(self):
+        return [b.value() for b in self._scroll_bars()]
+
+    def _restore_pos(self, pos, tries=12, screen=None):
+        """Volta cada barra para onde estava; as grades grandes montam aos poucos, então tenta de novo
+        até a barra ter tamanho para chegar lá."""
+        screen = screen or (self.stack.currentWidget(), self.state)
+        if screen != (self.stack.currentWidget(), self.state):
+            return   # já foi para outra tela
+        bars = self._scroll_bars()
+        pending = False
+        for bar, value in zip(bars, pos):
+            bar.setValue(value)
+            if bar.value() < value:
+                pending = True
+        if pending and tries:
+            QTimer.singleShot(80, lambda: self._restore_pos(pos, tries - 1, screen))
 
     def _clear_search(self):
         if self.search.text():
