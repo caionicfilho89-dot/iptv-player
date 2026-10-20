@@ -1,8 +1,23 @@
 """Preferências do usuário (player_config.json)."""
 import json
+import logging
+import os
 import time
 
 from .paths import CONFIG_FILE, LIST_CACHE
+
+log = logging.getLogger(__name__)
+BACKUP_FILE = CONFIG_FILE.with_name("player_config.bak")
+
+
+def _read(path):
+    """O dict salvo em path, ou None se não existe ou está corrompido (ex.: cheio de zeros após uma queda)."""
+    try:
+        # utf-8-sig aceita o arquivo mesmo se foi salvo no Bloco de Notas (com BOM)
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 DEAD_TTL = 6 * 3600  # canal marcado offline fica assim por 6h
 
@@ -43,22 +58,20 @@ DEFAULTS = {
 class Config:
     def __init__(self):
         self.data = json.loads(json.dumps(DEFAULTS))  # cópia profunda
-        try:
-            # utf-8-sig aceita o arquivo mesmo se foi salvo no Bloco de Notas (com BOM)
-            loaded = json.loads(CONFIG_FILE.read_text(encoding="utf-8-sig"))
-            if not isinstance(loaded, dict):
-                raise ValueError("formato inválido")
-            self.data.update(loaded)
-            if "only_my_lists" not in loaded and loaded.get("custom_sources") and not loaded.get("auto_update_lists", True):
-                self.data["only_my_lists"] = True  # v1.13: quem já usava uma lista única continua só com ela
-        except OSError:
-            pass  # primeira execução
-        except ValueError:
+        loaded = _read(CONFIG_FILE)
+        if loaded is None and CONFIG_FILE.exists():
             # arquivo corrompido: guarda uma cópia em vez de apagar favoritos e listas em silêncio
             try:
                 CONFIG_FILE.replace(CONFIG_FILE.with_name(f"player_config.corrompido-{int(time.time())}.json"))
             except OSError:
                 pass
+            loaded = _read(BACKUP_FILE)  # e volta para a última versão boa
+            if loaded is not None:
+                log.warning("Configurações corrompidas — restauradas da cópia de segurança")
+        if loaded:
+            self.data.update(loaded)
+            if "only_my_lists" not in loaded and loaded.get("custom_sources") and not loaded.get("auto_update_lists", True):
+                self.data["only_my_lists"] = True  # v1.13: quem já usava uma lista única continua só com ela
         if not isinstance(self.data.get("dead"), dict):
             self.data["dead"] = {}
         self.prune_dead()
@@ -96,7 +109,12 @@ class Config:
     def save(self):
         try:
             tmp = CONFIG_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=1), encoding="utf-8")
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(json.dumps(self.data, ensure_ascii=False, indent=1))
+                f.flush()
+                os.fsync(f.fileno())  # sem isso, uma queda de energia deixa o arquivo cheio de zeros
+            if _read(CONFIG_FILE) is not None:
+                CONFIG_FILE.replace(BACKUP_FILE)  # guarda a última versão boa
             tmp.replace(CONFIG_FILE)
         except OSError:
             pass

@@ -2,7 +2,7 @@
 from PyQt6.QtCore import QAbstractListModel, QMargins, QModelIndex, QRect, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath
 from PyQt6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QPushButton, QSlider, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSlider, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget,
 )
 
 from .theme import T, VIDEO_TEXT, icon
@@ -421,15 +421,33 @@ class FullscreenOverlay(QWidget):
     zap_toggled = pyqtSignal(bool)
     captions_toggled = pyqtSignal(bool)
     volume_changed = pyqtSignal(int)
+    back = pyqtSignal()
+    forward = pyqtSignal()
 
     def __init__(self):
         super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
                          | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(22, 14, 22, 14)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(22, 12, 22, 14)
+        outer.setSpacing(6)
+        # barra de tempo (filmes, episódios e canais com "voltar"): só aparece quando o player também tem
+        self.seek_row = QWidget()
+        sr = QHBoxLayout(self.seek_row)
+        sr.setContentsMargins(0, 0, 0, 0)
+        self.seek_pos = QLabel(objectName="ovMuted")
+        self.seek = SeekSlider(Qt.Orientation.Horizontal)
+        self.seek.setObjectName("ovSeek")
+        self.seek_end = QLabel(objectName="ovMuted")
+        sr.addWidget(self.seek_pos)
+        sr.addWidget(self.seek, 1)
+        sr.addWidget(self.seek_end)
+        self.seek_row.hide()
+        outer.addWidget(self.seek_row)
+        lay = QHBoxLayout()
         lay.setSpacing(10)
+        outer.addLayout(lay)
         self.logo = QLabel()
         self.logo.setFixedSize(84, 52)
         self.logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -440,12 +458,15 @@ class FullscreenOverlay(QWidget):
         self.status = QLabel(objectName="ovMuted")
         self.epg = QLabel(objectName="ovMuted")
         for w in (self.title, self.status, self.epg):
-            info.addWidget(w)
+            w.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)  # texto longo é cortado,
+            info.addWidget(w)                                                           # não estica a barra
         lay.addLayout(info, 1)
         self.prev_btn = make_btn("prev", "Canal anterior", self.prev.emit, icon_color="white")
         self.play_btn = make_btn("pause", "Pausar / continuar", self.play_pause.emit, kind="play",
                                  icon_color="white", icon_size=22)
         self.next_btn = make_btn("next", "Próximo canal", self.next.emit, icon_color="white")
+        self.back_btn = make_btn("back", "Voltar 30 segundos", self.back.emit, icon_color="white")
+        self.fwd_btn = make_btn("forward", "Avançar 30 segundos", self.forward.emit, icon_color="white")
         self.zap_btn = make_btn("shuffle", "Zapping automático", kind="round", checkable=True, icon_color="white")
         self.zap_btn.toggled.connect(self.zap_toggled.emit)
         self.cc_btn = make_btn("cc", "Legendas traduzidas (Ctrl+T)", kind="round", checkable=True, icon_color="white")
@@ -456,7 +477,7 @@ class FullscreenOverlay(QWidget):
         self.vol.setFixedWidth(110)
         self.vol.valueChanged.connect(self.volume_changed.emit)
         self.exit_btn = make_btn("fs_exit", "Sair da tela cheia (Esc)", self.exit_fs.emit, icon_color="white")
-        for w in (self.prev_btn, self.play_btn, self.next_btn):
+        for w in (self.prev_btn, self.back_btn, self.play_btn, self.fwd_btn, self.next_btn):
             lay.addWidget(w)
         lay.addSpacing(10)
         for w in (self.cc_btn, self.zap_btn, self.mute_btn, self.vol, self.exit_btn):
@@ -491,7 +512,19 @@ class FullscreenOverlay(QWidget):
         p.setPen(QColor(255, 255, 255, 30))
         p.drawPath(path)
 
+    def set_seek(self, visible, lo, hi, value, pos_text, end_text):
+        self.seek_row.setVisible(visible)
+        self.back_btn.setVisible(visible)
+        self.fwd_btn.setVisible(visible)
+        if visible:
+            self.seek.blockSignals(True)
+            self.seek.setRange(lo, hi)
+            self.seek.setValue(value)
+            self.seek.blockSignals(False)
+            self.seek_pos.setText(pos_text)
+            self.seek_end.setText(end_text)
+
     def place(self, screen_geo):
-        w = min(1000, screen_geo.width() - 80)
-        h = 100
+        w = min(1100, screen_geo.width() - 80)
+        h = 140 if self.seek_row.isVisibleTo(self) else 100
         self.setGeometry(screen_geo.x() + (screen_geo.width() - w) // 2, screen_geo.bottom() - h - 36, w, h)

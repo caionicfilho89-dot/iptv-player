@@ -166,6 +166,9 @@ QPushButton#dot {{ background: {rgba(t['text'], 70)}; border: none; border-radiu
 QPushButton#dot:checked {{ background: {gradient_css()}; min-width: 26px; max-width: 26px; }}
 QLabel#h1 {{ font-family: '{disp}'; font-size: 22pt; font-weight: 700; color: {t['strong']}; }}
 QLabel#heroMeta {{ color: {t['text']}; font-size: 10.5pt; }}
+QLabel#heroPlot {{ color: {rgba(t['text'], 215)}; font-size: 10pt; }}
+QLabel#detailPlot {{ color: {t['text']}; font-size: 11pt; padding-top: 6px; }}
+QLabel#castList {{ font-size: 9.8pt; padding: 2px 2px 0 2px; }}
 QTabWidget::pane {{ border: none; }}
 QTabBar::tab {{ background: transparent; color: {t['muted']}; border: none; border-bottom: 2px solid {t['border']};
     padding: 7px 14px; margin-right: 2px; }}

@@ -1,7 +1,8 @@
 """Ajustes do PudimFlix para listas de conta (Xtream) com filmes e séries.
 
 - filmes e episódios guardam a posição a cada 5 s (por nome, vale mesmo se o link mudar) e continuam de onde pararam;
-- se a conexão do filme cai, reconecta sozinho do ponto salvo (até 3 vezes), sem perder a barra de tempo;
+- travou ou caiu: reconecta na hora, quantas vezes for preciso — o filme volta do ponto onde parou e o canal
+  volta ao ao vivo; o intervalo entre tentativas cresce até 5 s para não sobrecarregar o servidor;
 - links da conta abrem direto (sem o buffer de pausar o ao vivo) e com User-Agent de navegador;
 - canal que falha não faz o player sair pulando: a conta só permite uma conexão por vez."""
 import hashlib
@@ -14,13 +15,19 @@ from PyQt6.QtCore import QTimer
 
 from .catalog import as_vod, catalog_fold, media_is_video
 from .log import log
+from . import mainwindow as _mw
 from .mainwindow import MainWindow
 from .paths import CACHE
 from .vlcload import vlc
 
 BOOKMARKS = CACHE / "vod_bookmarks.json"
-RETRY_DELAYS_MS = (4000, 7000, 10000)
-STALL_SECONDS = 25
+STALL_SECONDS = 8            # filme parado (sem pausa) por mais que isso = travou
+_mw.STALL_TIMEOUT = 6        # canal ao vivo parado por mais que isso = travou (antes 12 s)
+
+
+def retry_delay_ms(attempt):
+    """1ª tentativa quase na hora; depois 2 s, 3,5 s… até 5 s entre uma e outra."""
+    return min(5000, 500 + 1500 * (attempt - 1))
 
 
 def _recorded(item):
@@ -51,6 +58,8 @@ class PudimWindow(MainWindow):
         self._recovering = False
         self._vod_context = None
         self._last_failed = None
+        self._live_pending = False   # canal esperando a próxima tentativa de reconexão
+        self._live_retries = 0
         super().__init__(cfg)
 
     # --- marcadores
@@ -77,6 +86,29 @@ class PudimWindow(MainWindow):
         self.cfg["resume"][self.current.url] = [-1 if final else pos, length, time.time()]
         self._last_checkpoint = now
         self._write_bookmarks()
+        if now - getattr(self, "_last_cfg_save", 0) > 60:   # sobrevive a queda de energia / fechar à força
+            self._last_cfg_save = now
+            self.cfg.save()
+
+    def resume_of(self, ch):
+        rec = self._bookmarks.get(_bookmark_key(ch))
+        mine = (rec["position"], rec.get("length") or 0, rec.get("saved") or 0) \
+            if rec and not rec.get("finished") and rec.get("position", 0) > 0 else None
+        base = super().resume_of(ch)
+        return max((x for x in (mine, base) if x), key=lambda r: r[2], default=None)
+
+    def resume_list(self):
+        seen = {id(r[0]) for r in super().resume_list()}
+        out = super().resume_list()
+        if self.catalog is not None:
+            for rec in self._bookmarks.values():
+                if rec.get("finished") or rec.get("position", 0) <= 0:
+                    continue
+                ch = self.catalog.find_name(rec.get("name", ""))
+                if ch is not None and id(ch) not in seen:
+                    seen.add(id(ch))
+                    out.append((ch, rec["position"], rec.get("length") or 0, rec.get("saved") or 0))
+        return sorted(out, key=lambda r: -r[3])
 
     def resume_start(self, item):
         saved = self._bookmarks.get(_bookmark_key(item), {})
@@ -94,6 +126,9 @@ class PudimWindow(MainWindow):
         self._recovery_token += 1
         self._recovery_pending = False
         self._last_failed = None
+        if not self._live_pending:   # escolheu outro canal: zera a contagem de tentativas
+            self._live_retries = 0
+        self._live_pending = False
         return super().play(ch, *args, **kwargs)
 
     def play_ondemand(self, item, url, info="", start=None, live=None, playlist=None):
@@ -112,7 +147,8 @@ class PudimWindow(MainWindow):
         self._observed = -1
         self._seek_target, self._seek_attempts = start, 0
         if not self._recovering:
-            self._retries, self._retry_window = 0, time.monotonic()
+            self._retries = 0
+        self._live_pending = False
         result = super().play_ondemand(item, url, info=info or "", start=start, live=live, playlist=playlist)
         self._vod_context = (item, url, info, live, playlist)
         self.seek_row.show()
@@ -142,20 +178,35 @@ class PudimWindow(MainWindow):
         if self.vod and _recorded(self.current):
             return self._vod_failed(reason)
         ch = self.current
-        if ch is None:
+        if ch is None or self._live_pending:
             return
-        log.warning("Canal não abriu: %s (%s)", ch.name, reason)
+        if self.explore_btn.isChecked() or self.zap_btn.isChecked():
+            return super()._on_fail(reason)   # zapping/explorar: segue para o próximo canal, como antes
+        self._live_retries += 1
+        log.warning("Canal caiu: %s (%s) — reconectando, tentativa %d", ch.name, reason, self._live_retries)
         self.player.stop()
-        self.explore_btn.setChecked(False)
-        self.zap_btn.setChecked(False)
         self.confirmed = False
-        self.vod = None
-        self._last_failed = ch
-        self.current = None
         self.session_status.pop(ch.url, None)  # não marca como fora do ar: pode ser a conexão da conta ocupada
-        self._set_status("✕ Não abriu", "bad")
-        self.video.set_message(f"Não foi possível abrir “{ch.name}”.\nTente de novo em instantes ou escolha outro.")
-        self._update_count()
+        self._live_pending = True
+        self._recovery_token += 1
+        token, stream = self._recovery_token, self.stream
+        self._set_status(f"↻ Reconectando… (tentativa {self._live_retries})", "warn")
+        self.video.set_message(f"Reconectando “{ch.name}”…")
+
+        def reconnect():
+            if token != self._recovery_token or self.current is not ch:
+                return   # escolheu outro canal ou parou
+            self._live_pending = False
+            MainWindow.play(self, ch, auto=True, force=True, stream=stream)
+        QTimer.singleShot(retry_delay_ms(self._live_retries), reconnect)
+
+    def _monitor_tick(self):
+        if self._live_pending:
+            return   # esperando a próxima tentativa: não conta como nova falha
+        super()._monitor_tick()
+        if self.confirmed and self._live_retries and not self.vod:
+            log.info("Reconectou depois de %d tentativa(s)", self._live_retries)
+            self._live_retries = 0
 
     def _vod_failed(self, reason):
         if not self.vod or not _recorded(self.current):
@@ -163,24 +214,17 @@ class PudimWindow(MainWindow):
         if self._recovery_pending:
             return
         self._checkpoint(force=True)
-        now = time.monotonic()
-        if now - self._retry_window > 300:
-            self._retry_window, self._retries = now, 0
         self._retries += 1
         self.player.stop()
         self.confirmed = False
         self.seek_row.show()
         self._recovery_pending = True
-        if self._retries > len(RETRY_DELAYS_MS):
-            self.video.set_message("A conexão caiu várias vezes.\nSeu ponto foi salvo: clique em ▶ para continuar.")
-            self.vod["ended"] = True
-            self._recovery_pending = False
-            log.warning("Filme: reconexão desistiu depois de %d tentativas", self._retries - 1)
-            return
         self._recovery_token += 1
         token = self._recovery_token
-        self.video.set_message("Reconectando do ponto onde parou…")
-        log.warning("Filme: reconectando (tentativa %d, %.0fs) — %s", self._retries, self._good_pos, reason)
+        resume_at = max(0.0, self._good_pos - 2) if self._good_pos > 5 else self.resume_start(self.current)
+        self._set_status(f"↻ Reconectando… (tentativa {self._retries})", "warn")
+        self.video.set_message(f"Reconectando de {self._fmt_clock(resume_at)}…")
+        log.warning("Filme: reconectando (tentativa %d, %.0fs) — %s", self._retries, resume_at, reason)
 
         def reconnect():
             if token != self._recovery_token or self._vod_context is None:
@@ -188,10 +232,10 @@ class PudimWindow(MainWindow):
             item, url, info, live, playlist = self._vod_context
             self._recovering = True
             try:
-                self.play_ondemand(item, url, info=info, start=self.resume_start(item), live=live, playlist=playlist)
+                self.play_ondemand(item, url, info=info, start=resume_at, live=live, playlist=playlist)
             finally:
                 self._recovering = False
-        QTimer.singleShot(RETRY_DELAYS_MS[self._retries - 1], reconnect)
+        QTimer.singleShot(retry_delay_ms(self._retries), reconnect)
 
     def _vod_tick(self):
         if not self.vod or self._recovery_pending:
@@ -211,6 +255,9 @@ class PudimWindow(MainWindow):
             return
         self.seek_row.show()
         self._checkpoint()
+        if self.confirmed and self._retries:
+            log.info("Filme reconectou depois de %d tentativa(s)", self._retries)
+            self._retries = 0
         if state == vlc.State.Paused:
             self._progress_clock = now
             return
@@ -256,6 +303,8 @@ class PudimWindow(MainWindow):
         self._checkpoint(force=True)
         self._recovery_token += 1
         self._recovery_pending = False
+        self._live_pending = False
+        self._live_retries = 0
         return super().stop()
 
     def closeEvent(self, e):

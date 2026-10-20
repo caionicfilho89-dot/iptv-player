@@ -247,6 +247,15 @@ class ContentCatalog:
     def first(self, node):
         return self.channels[node.indices[0]]
 
+    def find_name(self, name):
+        """Item pelo nome (sem acento e maiúsculas), ou None."""
+        if not hasattr(self, "_by_name"):
+            self._by_name = {}
+            for i, n in enumerate(self.search_names):
+                self._by_name.setdefault(n.strip(), i)
+        i = self._by_name.get(catalog_fold(name).strip())
+        return self.channels[i] if i is not None else None
+
     def path_of(self, channel):
         """Caminho completo do item (a pasta onde ele está)."""
         return catalog_path(channel)

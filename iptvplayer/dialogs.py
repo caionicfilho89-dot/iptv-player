@@ -6,8 +6,8 @@ import urllib.parse
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices
 from PyQt6.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QTabWidget, QVBoxLayout, QWidget,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from . import APP_VERSION, catchup, xtream
@@ -47,8 +47,20 @@ class SettingsDialog(QDialog):
         self.cfg = cfg
         self.setWindowTitle("Configurações")
         self.setMinimumWidth(560)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(22, 16, 22, 18)
+        # o conteúdo rola; a barra de baixo (Cancelar / Salvar) fica sempre visível, em qualquer tamanho de tela
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 14)
+        outer.setSpacing(10)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.verticalScrollBar().setSingleStep(24)
+        body = QWidget(objectName="root")
+        self.scroll.setWidget(body)
+        outer.addWidget(self.scroll, 1)
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(22, 16, 22, 10)
         lay.setSpacing(8)
 
         lay.addWidget(QLabel("Aparência", objectName="h2"))
@@ -183,7 +195,13 @@ class SettingsDialog(QDialog):
         bottom.addStretch(1)
         bottom.addWidget(cancel)
         bottom.addWidget(ok)
-        lay.addLayout(bottom)
+        bottom.setContentsMargins(22, 0, 22, 0)
+        outer.addLayout(bottom)
+        # altura: o necessário, sem passar da tela (o resto rola)
+        screen = (parent.screen() if parent else None) or QApplication.primaryScreen()
+        avail = screen.availableGeometry()
+        need = body.sizeHint().height() + 70
+        self.resize(min(max(640, body.sizeHint().width() + 30), avail.width() - 40), min(need, avail.height() - 60))
 
     def _accent(self):
         b = self.swatches.checkedButton()

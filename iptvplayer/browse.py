@@ -1,6 +1,7 @@
 """Tela principal do PudimFlix: barra lateral com ícones, busca no topo, destaque com capa e fileiras de pôsteres.
 
 Tudo vem do catálogo (catalog.py). A janela principal fornece o catálogo e toca o que for escolhido."""
+import html
 import random
 
 from PyQt6.QtCore import QAbstractListModel, QEvent, QModelIndex, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
@@ -11,7 +12,8 @@ from PyQt6.QtWidgets import (
 )
 
 from . import catalog as cat
-from .catalog import CatalogNode, display_title, media_is_video
+from .catalog import CatalogNode, catalog_fold, display_title, media_is_video
+from .metadata import split_cast, stream_id
 from .net import LogoLoader
 from .theme import T, icon, icon_pixmap
 from .widgets import make_btn, set_btn_icon
@@ -125,9 +127,10 @@ def draw_placeholder(p, r, title, font):
 class EntryModel(QAbstractListModel):
     """Itens dos cartões: Channel (filme, episódio, canal) ou CatalogNode (uma série/programa inteiro)."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, page=None):
         super().__init__(parent)
         self.items = []
+        self.page = page
 
     def set_items(self, items):
         self.beginResetModel()
@@ -144,15 +147,15 @@ class EntryModel(QAbstractListModel):
         if role == Qt.ItemDataRole.UserRole:
             return e
         if role == Qt.ItemDataRole.ToolTipRole:
-            return e.label if isinstance(e, CatalogNode) else e.name
+            return self.page.tooltip(e) if self.page else (e.label if isinstance(e, CatalogNode) else e.name)
         return None
 
 
 class CardDelegate(QStyledItemDelegate):
     """Cartão com capa: pôster (2:3) para filmes e séries, retângulo largo (16:9) para canais ao vivo."""
-    POSTER = (136, 204)
-    WIDE = (200, 112)
-    TEXT_H = 46
+    POSTER = (164, 246)
+    WIDE = (236, 133)
+    TEXT_H = 48
     PAD = 7
 
     def __init__(self, page, wide=False):
@@ -192,7 +195,7 @@ class CardDelegate(QStyledItemDelegate):
         node = e if isinstance(e, CatalogNode) else None
         ch = page.catalog.first(node) if node else e
         video = node is not None or media_is_video(ch)
-        logo = page.catalog.logo_of(e)
+        logo = page.image_of(e)
         p.setClipPath(path)
         if video and not self.wide:
             pm = page.posters.get(logo)
@@ -251,7 +254,7 @@ class CardDelegate(QStyledItemDelegate):
         # título e linha de baixo
         title, sub = page.episode_text(e) if self.episodes else page.card_text(e)
         f = QFont(option.font)
-        f.setPointSizeF(9.2)
+        f.setPointSizeF(9.6)
         f.setBold(True)
         p.setFont(f)
         p.setPen(QColor(T["strong"] if hover else T["text"]))
@@ -311,7 +314,7 @@ class _GridFit(QObject):
 
 def _card_view(page, wide, wrap):
     v = QListView()
-    model = EntryModel(v)
+    model = EntryModel(v, page)
     v.setModel(model)
     v.setItemDelegate(CardDelegate(page, wide))
     v.setViewMode(QListView.ViewMode.IconMode)
@@ -398,6 +401,8 @@ class CardRow(QWidget):
         self._arrows()
 
     def _see_all(self):
+        if getattr(self, "_actor", None):
+            return self.page.open_actor(self._actor)
         if self.see_all_path is not None:
             self.page.open_path(self.see_all_path)
 
@@ -410,7 +415,7 @@ class CardRow(QWidget):
 # ----------------------------------------------------------------------------- destaque
 class Hero(QWidget):
     """Banner grande no topo do Início: capa desfocada ao fundo, pôster nítido e botões."""
-    HEIGHT = 270
+    HEIGHT = 290
 
     def __init__(self, page):
         super().__init__()
@@ -427,7 +432,10 @@ class Hero(QWidget):
         self.title = QLabel("", objectName="heroTitle")
         self.title.setWordWrap(True)
         self.meta = QLabel("", objectName="heroMeta")
-        for w in (self.kicker, self.title, self.meta):
+        self.plot = QLabel("", objectName="heroPlot")
+        self.plot.setWordWrap(True)
+        self.plot.setMaximumHeight(58)
+        for w in (self.kicker, self.title, self.meta, self.plot):
             w.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             txt.addWidget(w)
         txt.addStretch(1)
@@ -435,7 +443,7 @@ class Hero(QWidget):
         btns.setSpacing(10)
         self.play_btn = make_btn("play", "", self._play, kind="big", text="  Assistir", icon_color="white",
                                  icon_size=18)
-        self.more_btn = make_btn("layers", "", self._more, kind="ghost", text="  Ver mais", icon_size=18)
+        self.more_btn = make_btn("guide", "", self._more, kind="ghost", text="  Mais informações", icon_size=18)
         btns.addWidget(self.play_btn)
         btns.addWidget(self.more_btn)
         btns.addStretch(1)
@@ -489,10 +497,11 @@ class Hero(QWidget):
         self.kicker.setText(kicker.upper())
         self.title.setText(display_title(node.label if node else ch.name))
         self.meta.setText(page.hero_meta(e))
+        self.plot.setText(page.short_plot(e, 190))
         resume = not node and page.progress_of(ch)
         self.play_btn.setText("  Continuar" if resume else ("  Ver episódios" if node else "  Assistir"))
         self.play_btn.show()
-        self.more_btn.setVisible(bool(page.more_path(e)))
+        self.more_btn.setVisible(node is not None or media_is_video(ch))
         for k in range(self.dots.count()):
             d = self.dots.itemAt(k).widget()
             if d:
@@ -500,15 +509,29 @@ class Hero(QWidget):
         self.update()
 
     def _play(self):
-        e, _ = self.current()
-        if e is not None:
-            self.page.activate(e, None)
+        e, kicker = self.current()
+        if e is None:
+            return
+        if isinstance(e, CatalogNode):
+            return self.page.activate(e, None)
+        path = self.page.catalog.path_of(e)
+        if len(path) >= 3 and cat.is_title_level(path[:2]):   # episódio (continuar assistindo)
+            return self.page.play_episode(self.page.catalog.node(path[:3]), e)
+        if media_is_video(e):
+            return self.page.play_movie(e, None)
+        self.page.activate(e, None)
 
     def _more(self):
+        """Mais informações: página do filme ou da série, com a sinopse."""
         e, _ = self.current()
-        path = self.page.more_path(e) if e is not None else None
-        if path:
-            self.page.open_path(path)
+        if e is None:
+            return
+        if isinstance(e, CatalogNode):
+            return self.page.activate(e, None)
+        path = self.page.catalog.path_of(e)
+        if len(path) >= 3 and cat.is_title_level(path[:2]):
+            return self.page.activate(self.page.catalog.node(path[:3]), None)
+        self.page.activate(e, None)
 
     def poster_rect(self):
         h = self.height() - 40
@@ -531,13 +554,16 @@ class Hero(QWidget):
         pm = None
         if e is not None:
             ch = self.page.catalog.first(e) if isinstance(e, CatalogNode) else e
-            logo = self.page.catalog.logo_of(e)
+            logo = self.page.image_of(e)
             pm = (self.page.posters.get(logo) if media_is_video(ch) or isinstance(e, CatalogNode)
                   else self.page.win.logos.get(logo))
-            if pm is not None:
-                key = (logo, self.width(), self.height())
+            back = self.page.backdrop_of(e)
+            bpm = self.page.posters.get(back) if back else None
+            src = bpm or pm
+            if src is not None:
+                key = (back if bpm else logo, self.width(), self.height())
                 if self._bg[0] != key:
-                    self._bg = (key, blurred(pm, self.width(), self.height()))
+                    self._bg = (key, src if bpm else blurred(src, self.width(), self.height()))
                 draw_cover(p, self.rect(), self._bg[1], 0.3)
         # escurece da esquerda (onde fica o texto) para a direita
         fade = QLinearGradient(0, 0, self.width(), 0)
@@ -584,27 +610,44 @@ class Hero(QWidget):
 
 
 # ----------------------------------------------------------------------------- chips (filtros)
-class ChipBar(QScrollArea):
-    """Fileira de filtros (gêneros, plataformas, países) que rola de lado."""
+class ChipBar(QWidget):
+    """Fileira de filtros (gêneros, plataformas, países). Quando não cabe, aparecem setas ‹ › nas pontas
+    (a rodinha do mouse também rola de lado) e o filtro escolhido rola até ficar visível."""
     chosen = pyqtSignal(object)   # caminho
 
     def __init__(self):
         super().__init__()
-        self.setWidgetResizable(True)
-        self.setFrameShape(QFrame.Shape.NoFrame)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setFixedHeight(42)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        self.left = make_btn("chev_left", "Mais filtros", lambda: self._step(-1), kind="tool", icon_size=16)
+        self.right = make_btn("chev_right", "Mais filtros", lambda: self._step(+1), kind="tool", icon_size=16)
+        for b in (self.left, self.right):
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.area = QScrollArea()
+        self.area.setWidgetResizable(True)
+        self.area.setFrameShape(QFrame.Shape.NoFrame)
+        self.area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.inner = QWidget(objectName="chips")
         self.lay = QHBoxLayout(self.inner)
         self.lay.setContentsMargins(2, 4, 2, 4)
         self.lay.setSpacing(8)
-        self.setWidget(self.inner)
-        self.setStyleSheet("QScrollArea { background: transparent; border: none; }")
-        self.viewport().setAutoFillBackground(False)
+        self.area.setWidget(self.inner)
+        self.area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self.area.viewport().setAutoFillBackground(False)
         self.inner.setAutoFillBackground(False)
+        self.area.viewport().installEventFilter(self)
+        self.bar = self.area.horizontalScrollBar()
+        self.bar.valueChanged.connect(self._arrows)
+        self.bar.rangeChanged.connect(lambda *_: self._arrows())
+        row.addWidget(self.left)
+        row.addWidget(self.area, 1)
+        row.addWidget(self.right)
         self.group = QButtonGroup(self)
         self.group.setExclusive(True)
+        self._arrows()
 
     def set_chips(self, chips, selected):
         """chips: [(rótulo, caminho)]."""
@@ -614,20 +657,41 @@ class ChipBar(QScrollArea):
             b.deleteLater()
         while self.lay.count():
             self.lay.takeAt(0)
+        current = None
         for label, path in chips:
             b = QPushButton(label, objectName="chip")
             b.setCheckable(True)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             b.setChecked(tuple(path) == tuple(selected))
+            if b.isChecked():
+                current = b
             b.clicked.connect(lambda _=False, pth=path: self.chosen.emit(tuple(pth)))
             self.group.addButton(b)
             self.lay.addWidget(b)
         self.lay.addStretch(1)
-        self.horizontalScrollBar().setValue(0)
+        self.bar.setValue(0)
+        if current is not None:   # o filtro escolhido aparece mesmo se estiver lá no fim da fileira
+            QTimer.singleShot(80, lambda b=current: self.area.ensureWidgetVisible(b, 120, 0))
+        QTimer.singleShot(0, self._arrows)
 
-    def wheelEvent(self, e):
-        bar = self.horizontalScrollBar()
-        bar.setValue(bar.value() - (e.angleDelta().y() or e.angleDelta().x()))
+    def _step(self, direction):
+        self.bar.setValue(self.bar.value() + direction * max(120, self.area.viewport().width() * 2 // 3))
+
+    def _arrows(self):
+        overflow = self.bar.maximum() > 0
+        self.left.setVisible(overflow)
+        self.right.setVisible(overflow)
+        self.left.setEnabled(self.bar.value() > 0)
+        self.right.setEnabled(self.bar.value() < self.bar.maximum())
+
+    def eventFilter(self, obj, e):
+        if e.type() == QEvent.Type.Wheel:
+            self.bar.setValue(self.bar.value() - (e.angleDelta().y() or e.angleDelta().x()))
+            return True
+        if e.type() == QEvent.Type.Resize:
+            QTimer.singleShot(0, self._arrows)
+        return False
 
 
 # ----------------------------------------------------------------------------- telas
@@ -706,12 +770,15 @@ class SectionView(QWidget):
 
 
 class SeriesView(QWidget):
-    """Uma série ou programa: capa, temporadas e episódios."""
+    """Página de detalhes: série ou programa (capa, sinopse, temporadas e episódios) ou filme (capa, sinopse,
+    elenco e botões). A imagem larga do título aparece apagada ao fundo."""
 
     def __init__(self, page):
         super().__init__()
         self.page = page
         self.node = None
+        self.movie = None       # filme aberto (None = série)
+        self.movie_ctx = None   # pasta de onde o filme foi aberto (vira a lista do player)
         self.season = None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(28, 8, 12, 0)
@@ -719,23 +786,63 @@ class SeriesView(QWidget):
         top = QHBoxLayout()
         top.setSpacing(24)
         self.poster = QLabel()
-        self.poster.setFixedSize(150, 225)
-        top.addWidget(self.poster, 0, Qt.AlignmentFlag.AlignTop)
+        self.poster.setFixedSize(180, 270)
+        left = QVBoxLayout()
+        left.setSpacing(8)
+        left.addWidget(self.poster)
+        # elenco embaixo da capa: cada nome abre os outros títulos da pessoa
+        self.cast = QLabel("", objectName="castList")
+        self.cast.setWordWrap(True)
+        self.cast.setFixedWidth(180)
+        self.cast.setTextFormat(Qt.TextFormat.RichText)
+        self.cast.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cast.linkActivated.connect(lambda i: self.page.open_actor(self._cast_names[int(i)]))
+        self._cast_names = []
+        left.addWidget(self.cast)
+        left.addStretch(1)
+        top.addLayout(left)
         info = QVBoxLayout()
         info.setSpacing(6)
         self.kicker = QLabel("", objectName="heroKicker")
         self.title = QLabel("", objectName="h1")
         self.title.setWordWrap(True)
         self.meta = QLabel("", objectName="heroMeta")
-        for w in (self.kicker, self.title, self.meta):
+        self.plot = QLabel("", objectName="detailPlot")
+        self.plot.setWordWrap(True)
+        self.plot.setMaximumWidth(760)
+        self.credits = QLabel("", objectName="muted")
+        self.credits.setWordWrap(True)
+        self.credits.setMaximumWidth(760)
+        # sinopse + elenco numa área com rolagem: texto longo não empurra os botões para fora da tela
+        self.text_box = QWidget(objectName="plotBox")
+        tb = QVBoxLayout(self.text_box)
+        tb.setContentsMargins(0, 0, 8, 0)
+        tb.setSpacing(6)
+        tb.addWidget(self.plot)
+        tb.addWidget(self.credits)
+        tb.addStretch(1)
+        for lbl in (self.plot, self.credits):
+            lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.text_scroll = QScrollArea(objectName="plotScroll")
+        self.text_scroll.setWidget(self.text_box)
+        self.text_scroll.setWidgetResizable(True)
+        self.text_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.text_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.text_scroll.setStyleSheet("QScrollArea, QWidget#plotBox { background: transparent; }")
+        self.text_scroll.viewport().setAutoFillBackground(False)
+        self.text_scroll.verticalScrollBar().setSingleStep(16)
+        for w in (self.kicker, self.title, self.meta, self.text_scroll):
             info.addWidget(w)
         info.addSpacing(8)
         btns = QHBoxLayout()
         self.play_btn = make_btn("play", "", self._play_main, kind="big", text="  Assistir", icon_color="white",
                                  icon_size=18)
+        self.restart_btn = make_btn("back", "Assistir do começo", self._play_restart, kind="ghost",
+                                    text="  Do começo", icon_size=18)
         self.fav_btn = make_btn("heart", "Guardar na Minha lista", self._toggle_fav, kind="ghost",
                                 text="  Minha lista", icon_size=18)
         btns.addWidget(self.play_btn)
+        btns.addWidget(self.restart_btn)
         btns.addWidget(self.fav_btn)
         btns.addStretch(1)
         info.addLayout(btns)
@@ -754,6 +861,9 @@ class SeriesView(QWidget):
     def show_node(self, node):
         page = self.page
         self.node = node
+        self.movie = None
+        self.restart_btn.hide()
+        self.episodes.show()
         first = page.catalog.first(node)
         provider = node.path[1] if node.path[0] == cat.SERIES else "Programa de TV"
         seasons = page.catalog.ordered_children(node, "name")
@@ -762,8 +872,15 @@ class SeriesView(QWidget):
         n_seasons = sum(1 for s in seasons if s.label.startswith("Temporada"))
         parts = [f"{n_seasons} temporada{'s' if n_seasons != 1 else ''}" if n_seasons else "",
                  f"{node.count} episódio{'s' if node.count != 1 else ''}"] + cat.badges(first)
+        info = page.meta.series_info(node.label) or {}
+        if info.get("rating"):
+            parts.insert(0, f"★ {info['rating']:.1f}")
+        if info.get("genre"):
+            parts.append(info["genre"])
         self.meta.setText("   ·   ".join(p for p in parts if p))
+        self._set_text(info)
         self._paint_poster()
+        self.update()
         nxt = page.next_episode(node)
         self.play_btn.setText("  Continuar " + self._short(nxt) if nxt and page.progress_of(nxt) else
                               "  Assistir " + self._short(nxt) if nxt else "  Assistir")
@@ -777,14 +894,114 @@ class SeriesView(QWidget):
             self.seasons.hide()
         self._show_season(start)
 
+    def show_movie(self, ch, ctx):
+        """Filme: sinopse, nota, duração, elenco e os botões Assistir / Do começo / Minha lista."""
+        page = self.page
+        self.movie, self.movie_ctx, self.node = ch, ctx, None
+        self.seasons.hide()
+        self.episodes.hide()
+        path = page.catalog.path_of(ch)
+        self.kicker.setText((path[1] if len(path) > 1 else "Filme").upper())
+        self.title.setText(display_title(ch.name))
+        self.refresh_movie()
+        resume = page.progress_of(ch)
+        self.play_btn.setText("  Continuar" if resume else "  Assistir")
+        self.restart_btn.setVisible(bool(resume))
+        self._fav_state()
+
+    def refresh_movie(self):
+        """Redesenha quando a sinopse do filme chega da internet."""
+        ch, page = self.movie, self.page
+        if ch is None:
+            return
+        info = page.meta.movie_info(ch) or {}
+        year = info.get("year") or (str(cat.year_of(ch.name)) if cat.year_of(ch.name) else "")
+        parts = [f"★ {info['rating']:.1f}" if info.get("rating") else "", year,
+                 self._duration(info.get("duration", "")), info.get("genre", "")] + cat.badges(ch)
+        left = page._left(ch)
+        if left:
+            parts.append(left)
+        self.meta.setText("   ·   ".join(p for p in parts if p))
+        self._set_text(info, loading=not info)
+        self._paint_poster()
+        self.update()
+
+    @staticmethod
+    def _duration(text):
+        """"01:38:21" -> "1h 38min"."""
+        try:
+            h, m, _s = (int(x) for x in text.split(":"))
+        except ValueError:
+            return ""
+        return f"{h}h {m:02d}min" if h else f"{m} min"
+
+    def _set_text(self, info, loading=False):
+        plot = info.get("plot", "")
+        self.plot.setText(plot if plot else ("Carregando a sinopse…" if loading else ""))
+        self.plot.setVisible(bool(plot) or loading)
+        bits = []
+        if info.get("director"):
+            bits.append(f"<b>Direção:</b> {html.escape(info['director'])}")
+        self.credits.setText("<br>".join(bits))
+        self.credits.setVisible(bool(bits))
+        self._cast_names = split_cast(info.get("cast"))[:6 if self.node is not None else 10]
+        links = "<br>".join(f"<a href='{i}' style='color:{T['text']}; text-decoration:none'>{html.escape(n)}</a>"
+                            for i, n in enumerate(self._cast_names))
+        self.cast.setText(f"<span style='color:{T['muted']}; font-weight:700'>ELENCO</span><br>{links}"
+                          if links else "")
+        self.cast.setVisible(bool(links))
+        self.cast.setToolTip("Clique num nome para ver os outros filmes e séries da pessoa" if links else "")
+        self.text_scroll.verticalScrollBar().setValue(0)
+        QTimer.singleShot(0, self._fit_text)
+
+    def _fit_text(self):
+        """A área do texto cresce até um limite; passou disso, aparece a barra de rolagem."""
+        limit = 130 if self.node is not None else max(130, self.height() - 330)  # série: sobra espaço p/ episódios
+        width = min(760, max(200, self.text_scroll.viewport().width() - 8))   # largura real dos textos
+        shown = [lbl for lbl in (self.plot, self.credits) if not lbl.isHidden()]
+        need = sum(lbl.heightForWidth(width) for lbl in shown) + 6 * max(0, len(shown) - 1) + 4
+        self.text_box.setMinimumHeight(need)   # texto mais alto que a área: a barra de rolagem aparece
+        self.text_scroll.setFixedHeight(max(0, min(limit, need)))
+        self.text_scroll.setVisible(not self.plot.isHidden() or not self.credits.isHidden())
+        if not self.text_scroll.verticalScrollBar().isSliderDown():
+            QTimer.singleShot(0, lambda: self.text_scroll.verticalScrollBar().setValue(0))
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit_text()
+
+    def paintEvent(self, e):
+        """Imagem larga do título apagada no alto da página (some no fundo)."""
+        page = self.page
+        target = self.movie or self.node
+        back = page.backdrop_of(target) if target is not None else ""
+        pm = page.posters.get(back) if back else None
+        if pm is None:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        r = QRect(0, 0, self.width(), min(self.height(), 420))
+        p.setOpacity(0.32)
+        draw_cover(p, r, pm, 0.25)
+        p.setOpacity(1)
+        fade = QLinearGradient(0, r.top(), 0, r.bottom())
+        fade.setColorAt(0, _rgba(T["bg"], 60))
+        fade.setColorAt(1, QColor(T["bg"]))
+        p.fillRect(r, fade)
+        side = QLinearGradient(0, 0, self.width(), 0)
+        side.setColorAt(0, _rgba(T["bg"], 200))
+        side.setColorAt(0.6, _rgba(T["bg"], 0))
+        p.fillRect(r, side)
+
     def _short(self, ch):
         m = cat.EPISODE_RE.search(ch.name)
         return f"T{int(m.group(1))}:E{int(m.group(2))}" if m else ""
 
     def _paint_poster(self):
-        if self.node is None:
+        target = self.movie or self.node
+        if target is None:
             return
-        pm = self.page.posters.get(self.page.catalog.logo_of(self.node))
+        pm = self.page.posters.get(self.page.image_of(target))
         out = QPixmap(self.poster.size() * 2)
         out.setDevicePixelRatio(2)
         out.fill(Qt.GlobalColor.transparent)
@@ -798,7 +1015,7 @@ class SeriesView(QWidget):
         if pm:
             draw_cover(p, r, pm)
         else:
-            draw_placeholder(p, r, display_title(self.node.label), self.font())
+            draw_placeholder(p, r, display_title(self.node.label if self.node else self.movie.name), self.font())
         p.end()
         self.poster.setPixmap(out)
 
@@ -810,19 +1027,28 @@ class SeriesView(QWidget):
         self.episodes.verticalScrollBar().setValue(0)
 
     def _play_main(self):
+        if self.movie is not None:
+            return self.page.play_movie(self.movie, self.movie_ctx)
         nxt = self.page.next_episode(self.node)
         if nxt is not None:
             self._play_episode(nxt)
 
+    def _play_restart(self):
+        if self.movie is not None:
+            self.page.play_movie(self.movie, self.movie_ctx, from_start=True)
+
     def _play_episode(self, ch):
         self.page.play_episode(self.node, ch)
 
+    def _fav_item(self):
+        return self.movie if self.movie is not None else self.page.catalog.first(self.node)
+
     def _toggle_fav(self):
-        self.page.win.toggle_fav(self.page.catalog.first(self.node))
+        self.page.win.toggle_fav(self._fav_item())
         self._fav_state()
 
     def _fav_state(self):
-        fav = self.page.win.is_fav(self.page.catalog.first(self.node).url)
+        fav = self.page.win.is_fav(self._fav_item().url)
         set_btn_icon(self.fav_btn, "heart", "accent" if fav else "text")
         self.fav_btn.setText("  Na Minha lista" if fav else "  Minha lista")
 
@@ -840,6 +1066,19 @@ class SearchView(QScrollArea):
         lay.setSpacing(22)
         self.title = QLabel("", objectName="h1")
         lay.addWidget(self.title)
+        # atores e atrizes cujo nome bate com a busca: clicar mostra tudo da lista com a pessoa
+        self.people_box = QWidget()
+        pl = QVBoxLayout(self.people_box)
+        pl.setContentsMargins(6, 0, 0, 0)
+        pl.setSpacing(2)
+        pl.addWidget(QLabel("Atores e atrizes", objectName="rowTitle"))
+        self.people = ChipBar()
+        self.people.chosen.connect(lambda path: page.open_actor(path[0]))
+        pl.addWidget(self.people)
+        lay.addWidget(self.people_box)
+        self.cast_row = CardRow(page, "")   # busca com o nome exato de alguém: os títulos da pessoa
+        self.cast_row.page_bar = self.verticalScrollBar()
+        lay.addWidget(self.cast_row)
         self.rows = {}
         for key, label, wide in (("titles", "Séries e programas", False), ("movies", "Filmes", False),
                                  ("live", "Canais ao vivo", True), ("videos", "Vídeos", False)):
@@ -860,8 +1099,64 @@ class SearchView(QScrollArea):
             total += len(items)
             row.set_items(items, ctx="busca")
             row.count_text = len(items)
+        people = found.get("people", [])
+        self.people.set_chips([(f"{name}  ·  {n}", (name,)) for name, n in people], ())
+        self.people_box.setVisible(bool(people))
+        total += len(people)
+        exact = people[0][0] if people and catalog_fold(people[0][0]) == catalog_fold(query).strip() else None
+        cast_items = self.page.allowed(self.page.actor_entries(exact)) if exact else []
+        self.cast_row.title.setText(f"Com {exact}")
+        self.cast_row.set_items(cast_items, ctx="Elenco")
+        self.cast_row.all_btn.setVisible(len(cast_items) > ROW_MAX)
+        self.cast_row.see_all_path = None
+        self.cast_row._actor = exact
         self.empty.setVisible(total == 0)
         self.verticalScrollBar().setValue(0)
+
+
+class ActorView(QWidget):
+    """Tudo da lista (filmes, séries e programas) com um ator ou atriz no elenco."""
+
+    def __init__(self, page):
+        super().__init__()
+        self.page = page
+        self.name = ""
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(28, 8, 12, 0)
+        lay.setSpacing(8)
+        head = QHBoxLayout()
+        self.title = QLabel("", objectName="h1")
+        head.addWidget(self.title)
+        self.count = QLabel("", objectName="muted")
+        head.addWidget(self.count, 0, Qt.AlignmentFlag.AlignBottom)
+        head.addStretch(1)
+        lay.addLayout(head)
+        self.note = QLabel("", objectName="muted")
+        self.note.setWordWrap(True)
+        lay.addWidget(self.note)
+        self.grid, self.model = _card_view(page, False, wrap=True)
+        self.grid.setProperty("ctx", "Elenco")
+        lay.addWidget(self.grid, 1)
+
+    def show_actor(self, name, keep_scroll=False):
+        self.name = name
+        items = self.page.allowed(self.page.actor_entries(name))
+        self.title.setText(name)
+        self.count.setText(f"   {len(items)} título{'s' if len(items) != 1 else ''} na sua lista" if items else
+                           "   nada na sua lista ainda")
+        self.update_note()
+        pos = self.grid.verticalScrollBar().value()
+        self.model.set_items(items)
+        self.grid.verticalScrollBar().setValue(pos if keep_scroll else 0)
+
+    def update_note(self):
+        done, total = self.page.meta.cast_ready()
+        if total and done < total:
+            self.note.setText(f"Ainda conhecendo o elenco dos filmes ({done * 100 // total}% de "
+                              f"{_fmt_count(total)}) — mais títulos vão aparecendo aqui sozinhos.")
+            self.note.show()
+        else:
+            self.note.hide()
 
 
 # ----------------------------------------------------------------------------- página
@@ -869,10 +1164,13 @@ class BrowsePage(QWidget):
     def __init__(self, win):
         super().__init__(objectName="home")
         self.win = win
+        self.meta = win.meta
         self.catalog = None
         self.posters = PosterLoader(self)
         self._repaint = QTimer(self, singleShot=True, interval=80, timeout=self.update_views)
         self.posters.loaded.connect(lambda _u: self._repaint.start())
+        self.meta.series_ready.connect(self._on_series_info)
+        self.meta.movie_ready.connect(self._on_movie_info)
         self.history = []        # telas anteriores, para o botão Voltar
         self.state = ("home",)
 
@@ -927,7 +1225,7 @@ class BrowsePage(QWidget):
         self.back_btn = make_btn("chev_left", "Voltar (Esc)", self.back, kind="tool", icon_size=18)
         self.back_btn.hide()
         bl.addWidget(self.back_btn)
-        self.search = QLineEdit(placeholderText="Buscar filmes, séries, canais…", objectName="bigSearch")
+        self.search = QLineEdit(placeholderText="Buscar filmes, séries, canais, atores…", objectName="bigSearch")
         self.search.setClearButtonEnabled(True)
         self.search.addAction(icon("search", "muted", 18), QLineEdit.ActionPosition.LeadingPosition)
         self.search.setMaximumWidth(560)
@@ -969,6 +1267,11 @@ class BrowsePage(QWidget):
         self.stack.addWidget(self.series)
         self.results = SearchView(self)
         self.stack.addWidget(self.results)
+        self.actor = ActorView(self)
+        self.stack.addWidget(self.actor)
+        self.meta.cast_progress.connect(self._on_cast_progress)
+        self._by_sid = None      # id do filme na conta -> item da lista (montado quando precisa)
+        self._title_nodes = None  # nome da série sem acento -> CatalogNode
         ml.addWidget(self.stack, 1)
         lay.addWidget(main, 1)
         self.nav_btns["home"].setChecked(True)
@@ -993,10 +1296,118 @@ class BrowsePage(QWidget):
         if self.stack.currentWidget() is self.series:
             self.series._paint_poster()
 
+    def _on_series_info(self):
+        self._repaint.start()
+        if self.stack.currentWidget() is self.series and self.series.node is not None:
+            self.series.show_node(self.series.node)
+        if self.state == ("home",):
+            self.hero.show_slide(self.hero.index)
+
+    def _on_movie_info(self, url):
+        if self.series.movie is not None and self.series.movie.url == url:
+            self.series.refresh_movie()
+        e, _k = self.hero.current()
+        if e is not None and not isinstance(e, CatalogNode) and e.url == url:
+            self.hero.show_slide(self.hero.index)
+
+    def _on_cast_progress(self, _done, _total):
+        if self.stack.currentWidget() is self.actor:
+            self.actor.show_actor(self.actor.name, keep_scroll=True)
+
+    # --- elenco
+    def actor_entries(self, name):
+        """Filmes (um por título: sem repetir a versão legendada) e séries/programas com a pessoa no elenco."""
+        catalog = self.catalog
+        if catalog is None:
+            return []
+        if self._by_sid is None and self.meta.account:
+            self._by_sid, self._title_nodes = {}, {}
+            for ch in catalog.channels:
+                if "/movie/" in ch.url and self.meta.owns(ch.url):
+                    self._by_sid.setdefault(stream_id(ch.url), ch)
+            for path, node in catalog.nodes.items():
+                if len(path) == 3 and cat.is_title_level(path[:2]):
+                    self._title_nodes.setdefault(catalog_fold(node.label).strip(), node)
+        by_sid, nodes = self._by_sid or {}, self._title_nodes or {}
+        sids, series = self.meta.actor_titles(name)
+        movies, seen = [], set()
+        for ch in sorted((by_sid[s] for s in sids if s in by_sid),
+                         key=lambda c: (cat.badges(c) != [], c.name)):
+            key = (catalog_fold(display_title(ch.name)), cat.year_of(ch.name))
+            if key not in seen:
+                seen.add(key)
+                movies.append(ch)
+        shows = [nodes[t] for t in series if t in nodes]
+        year = lambda e: cat.year_of(e.name) if not isinstance(e, CatalogNode) else \
+            int((self.meta.series_info(e.label) or {}).get("year") or 0)
+        return sorted(movies + shows, key=lambda e: -year(e))
+
+    def open_actor(self, name):
+        if name:
+            self._go(("actor", name))
+
+    # --- informações (sinopse, capas)
+    def _series_info_of(self, e):
+        if isinstance(e, CatalogNode):
+            return self.meta.series_info(e.label)
+        path = self.catalog.path_of(e)
+        if len(path) >= 3 and cat.is_title_level(path[:2]):
+            return self.meta.series_info(path[2])
+        return None
+
+    def info_of(self, e, fetch=True):
+        """Informações do título (série ou filme) ou None; filmes são buscados na hora, em segundo plano."""
+        if e is None:
+            return None
+        info = self._series_info_of(e)
+        if info is not None or isinstance(e, CatalogNode):
+            return info
+        if media_is_video(e):
+            return self.meta.movie_info(e, fetch)
+        return None
+
+    def image_of(self, e):
+        """Capa: a da série vinda da conta (é a capa oficial) ou a imagem da lista."""
+        if isinstance(e, CatalogNode):
+            info = self.meta.series_info(e.label)
+            if info and info.get("cover"):
+                return info["cover"]
+            return self.catalog.logo_of(e)
+        logo = self.catalog.logo_of(e)
+        if not logo and media_is_video(e):
+            info = self._series_info_of(e) or self.meta.movie_info(e, fetch=False)
+            if info and info.get("cover"):
+                return info["cover"]
+        return logo
+
+    def backdrop_of(self, e):
+        info = self.info_of(e, fetch=False) if e is not None else None
+        return (info or {}).get("backdrop", "")
+
+    def short_plot(self, e, limit=180):
+        """Sinopse curta (filme/série) ou o programa que está passando (canal)."""
+        if e is None:
+            return ""
+        if not isinstance(e, CatalogNode) and not media_is_video(e):
+            cur = self.win.epg.now_next(e)[0] if self.win.epg.has_data() else None
+            text = (cur[3] or "") if cur and len(cur) > 3 else ""
+        else:
+            text = (self.info_of(e) or {}).get("plot", "")
+        text = " ".join(text.split())
+        return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + "…"
+
+    def tooltip(self, e):
+        title, sub = self.card_text(e)
+        plot = self.short_plot(e, 260) if isinstance(e, CatalogNode) or not media_is_video(e) or \
+            self.meta.movie_info(e, fetch=False) else ""
+        lines = [f"<b>{title}</b>"] + ([sub] if sub else []) + ([f"<i>{plot}</i>"] if plot else [])
+        return "<div style='max-width:340px'>" + "<br>".join(lines) + "</div>"
+
     # --- dados
     def set_catalog(self, catalog):
         first = self.catalog is None
         self.catalog = catalog
+        self._by_sid = self._title_nodes = None
         kids = self.win.cfg["kids"]
         for key, _label, _ic, path in SECTIONS:
             n = catalog.node(path) if (catalog and path) else None
@@ -1026,7 +1437,7 @@ class BrowsePage(QWidget):
 
     def progress_of(self, ch):
         """Quanto já foi assistido (0 a 1) do filme/episódio, para a barrinha do cartão."""
-        pos = self.win.cfg["resume"].get(ch.url)
+        pos = self.win.resume_of(ch)
         if not pos or pos[0] <= 0 or not pos[1]:
             return 0
         return min(1.0, max(0.03, pos[0] / pos[1]))
@@ -1057,7 +1468,7 @@ class BrowsePage(QWidget):
         return cat.episode_label(ch), self._left(ch) or (f"Temporada {int(m.group(1))}" if m else "")
 
     def _left(self, ch):
-        pos = self.win.cfg["resume"].get(ch.url)
+        pos = self.win.resume_of(ch)
         if pos and pos[0] > 0 and pos[1]:
             mins = int((pos[1] - pos[0]) // 60)
             return f"Faltam {mins} min" if mins > 0 else "Quase no fim"
@@ -1096,6 +1507,9 @@ class BrowsePage(QWidget):
         best, best_t = None, 0
         for i, ch in enumerate(eps):
             pos = resume.get(ch.url)
+            mine = self.win.resume_of(ch)   # marcador gravado a cada 5 s (mais recente que a configuração)
+            if mine and (not pos or mine[2] > pos[2]):
+                pos = mine
             if pos and pos[2] > best_t:
                 best_t = pos[2]
                 best = ch if pos[0] > 0 else (eps[i + 1] if i + 1 < len(eps) else ch)
@@ -1105,13 +1519,10 @@ class BrowsePage(QWidget):
     def _home_rows(self):
         catalog, win = self.catalog, self.win
         rows = []   # (título, itens, ver tudo, largo)
-        resume = win.cfg["resume"]
         cont, seen_titles = [], set()
-        for url, pos in sorted(resume.items(), key=lambda kv: -kv[1][2]):
-            i = catalog.by_url.get(url)
-            if i is None or pos[0] <= 0:
-                continue
-            ch = catalog.channels[i]
+        for ch, pos, length, _when in win.resume_list():
+            if length and length - pos < 120:
+                continue   # praticamente terminou
             path = catalog.path_of(ch)
             if len(path) >= 3 and (path[0] == cat.SERIES or path[:2] == cat.TV_SHOWS):
                 if path[:3] in seen_titles:
@@ -1232,8 +1643,15 @@ class BrowsePage(QWidget):
             self.series.show_node(state[1])
             self.stack.setCurrentWidget(self.series)
             self._check_nav(state[1].path)
+        elif kind == "movie":
+            self.series.show_movie(state[1], state[2])
+            self.stack.setCurrentWidget(self.series)
+            self._check_nav(self.catalog.path_of(state[1]))
         elif kind == "search":
             self.stack.setCurrentWidget(self.results)
+        elif kind == "actor":
+            self.actor.show_actor(state[1])
+            self.stack.setCurrentWidget(self.actor)
         self.back_btn.setVisible(bool(self.history) and kind != "home")
 
     def _check_nav(self, path):
@@ -1306,7 +1724,9 @@ class BrowsePage(QWidget):
             return
         if self.catalog is None:
             return
-        self.results.show_results(q, self.catalog.search(q))
+        found = self.catalog.search(q)
+        found["people"] = self.meta.find_actors(q)
+        self.results.show_results(q, found)
         self._go(("search", q), remember=self.state[0] != "search")
 
     # --- tocar
@@ -1323,7 +1743,16 @@ class BrowsePage(QWidget):
                 return self.play_episode(node, e)
             return self._go(("series", node))
         folder = ctx if isinstance(ctx, tuple) and self.catalog.node(ctx) else path
+        if media_is_video(e) and ctx != "Continuar assistindo":
+            return self._go(("movie", e, folder))   # filme: abre a página com a sinopse
+        if media_is_video(e):
+            return self.play_movie(e, folder)
         self.win.play_catalog(e, folder)
+
+    def play_movie(self, ch, folder, from_start=False):
+        info = self.meta.movie_info(ch, fetch=False) or {}
+        plot = " ".join((info.get("plot") or "").split())
+        self.win.play_catalog(ch, folder or self.catalog.path_of(ch), info=plot[:220], from_start=from_start)
 
     def play_episode(self, node, ch):
         eps = sorted(self.catalog.items(node.path), key=cat.episode_order)

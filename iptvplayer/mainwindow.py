@@ -38,6 +38,7 @@ from .browse import BrowsePage
 from .catalog import ContentCatalog, as_vod, media_is_video
 from . import themes
 from .log import log
+from .metadata import MetaService
 from .m3u import Channel, header_epg_urls, is_brazilian, parse_m3u
 from .mosaic import MosaicWindow
 from .net import BACKUP_FILE, ListDownloader, LogoLoader, Scanner, make_request
@@ -157,6 +158,7 @@ class MainWindow(QMainWindow):
         self.library = []            # (antiga tela Início por temas; os temas ainda montam as categorias "tema:")
         self.catalog = None          # tela Início: a lista organizada em Ao vivo, Filmes, Séries… (catalog.py)
         self.catalog_path = None     # pasta do catálogo que está na lista do player
+        self.meta = MetaService(self)  # sinopse, nota e capas de filmes e séries (API da conta)
         self._lib_building = False
         self._library_built.connect(self._on_library_built)
         self._guide_known = {}       # url -> o canal tem programação no guia (sobe nas fileiras)
@@ -715,6 +717,7 @@ class MainWindow(QMainWindow):
             self.catalog = catalog
             log.info("Catálogo: %d itens, %d grupos da lista", catalog.root.count, len(catalog.group_counts))
             self.scan_btn.hide()   # testar centenas de milhares de links de uma conta pode bloqueá-la
+            self.meta.start(catalog.channels)
         self.home.set_catalog(self.catalog)
         if self._lib_dirty:
             QTimer.singleShot(0, self._rebuild_library)
@@ -739,13 +742,16 @@ class MainWindow(QMainWindow):
         self.search.blockSignals(False)
         self._apply_filter()
 
-    def play_catalog(self, ch, path):
-        """Filme ou canal escolhido na tela Início."""
+    def play_catalog(self, ch, path, info="", from_start=False):
+        """Filme ou canal escolhido na tela Início (info: sinopse que aparece embaixo do título)."""
         path = tuple(path)
         if path != self.catalog_path:
             self.open_catalog_list(path)
         self.show_player()
-        self.play(as_vod(ch) if media_is_video(ch) else ch)
+        if not media_is_video(ch):
+            return self.play(ch)
+        item = as_vod(ch)
+        self.play_ondemand(item, item.url, info, start=0.0 if from_start else self.resume_start(item))
 
     def play_episode(self, ch, episodes, title):
         """Episódio: a temporada vira a lista do player e os seguintes tocam em sequência."""
@@ -761,6 +767,20 @@ class MainWindow(QMainWindow):
 
     def resume_start(self, item):
         return self._resume_pos(item.url)
+
+    def resume_of(self, ch):
+        """(segundos assistidos, duração, quando) do filme/episódio, ou None."""
+        pos = self.cfg["resume"].get(ch.url)
+        return (pos[0], pos[1], pos[2]) if pos and pos[0] > 0 else None
+
+    def resume_list(self):
+        """Filmes/episódios começados: [(item, segundos, duração, quando)], do mais recente."""
+        out = []
+        for url, pos in self.cfg["resume"].items():
+            i = self.catalog.by_url.get(url) if self.catalog else None
+            if i is not None and pos[0] > 0:
+                out.append((self.catalog.channels[i], pos[0], pos[1], pos[2]))
+        return sorted(out, key=lambda r: -r[3])
 
     def _paint_brand(self):
         self.home.brand.setText(f"Pudim<span style='color:{T['accent']}'>Flix</span>")
@@ -2847,7 +2867,25 @@ class MainWindow(QMainWindow):
         o.captions_toggled.connect(self.cc_btn.setChecked)
         o.volume_changed.connect(self.vol.setValue)
         o.vol.setValue(self.vol.value())
+        o.back.connect(lambda: self.seek_relative(-30))
+        o.forward.connect(lambda: self.seek_relative(+30))
+        o.seek.sliderMoved.connect(lambda v: (self.seek.setValue(v), self._seek_preview(v)))
+        o.seek.sliderReleased.connect(lambda: (self.seek.setValue(o.seek.value()), self._seek_released()))
         o.apply_style()
+
+    def _sync_overlay_seek(self, *_):
+        """Copia a barra de tempo do player para a barra da tela cheia."""
+        o = self.overlay
+        if o.seek.isSliderDown():
+            return
+        # na tela cheia os controles do player ficam ocultos: vale se a barra estaria visível neles
+        show = self.seek_row.isVisibleTo(self.controls)
+        changed = show != o.seek_row.isVisibleTo(o)
+        o.set_seek(show, self.seek.minimum(), self.seek.maximum(),
+                   self.seek.value(), self.seek_pos_lbl.text(), self.seek_end_lbl.text())
+        if changed and self.fullscreen:
+            screen = self.screen() or QGuiApplication.primaryScreen()
+            o.place(screen.geometry())
 
     def toggle_fullscreen(self):
         self.fullscreen = not self.fullscreen
@@ -2860,6 +2898,7 @@ class MainWindow(QMainWindow):
             self.showFullScreen()
             self.setFocus()
             screen = self.screen() or QGuiApplication.primaryScreen()
+            self._sync_overlay_seek()
             self.overlay.place(screen.geometry())
             self._update_now_info()
             self._last_mouse = QCursor.pos()
@@ -2874,6 +2913,7 @@ class MainWindow(QMainWindow):
             self.showMaximized() if self._was_maximized else self.showNormal()
 
     def _fs_mouse_tick(self):
+        self._sync_overlay_seek()
         pos, now = QCursor.pos(), time.monotonic()
         over = self.overlay.isVisible() and self.overlay.geometry().contains(pos)
         if pos != self._last_mouse:
@@ -3218,6 +3258,7 @@ class MainWindow(QMainWindow):
 
     # ================================================================ encerramento
     def closeEvent(self, e):
+        self.meta.save()
         self._save_resume()
         self.health.save(force=True)
         self.scanner.stop()
