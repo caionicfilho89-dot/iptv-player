@@ -44,6 +44,7 @@ from .mosaic import MosaicWindow
 from .net import BACKUP_FILE, ListDownloader, LogoLoader, Scanner, make_request
 from .pip import PipWindow
 from .recorder import Recorder, clip_path, snapshot_path
+from .offline import OfflineLibrary
 from .timeshift import LIVE_DELAY_OPT, START_WAIT_MS, Timeshift, supports as timeshift_supports
 from .remote import RemoteServer, qr_pixmap
 from .updater import UpdateDownloader, can_self_update, run_installer, setup_asset
@@ -347,7 +348,11 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.sidebar)
         lay.addWidget(self.splitter, 1)
         self.sidebar.hide()  # o menu antigo saiu: as categorias ficam na tela Início (botão Fontes)
+        self.offline = OfflineLibrary(self.cfg, self)   # filmes/episódios baixados (assistir sem internet)
         self.home = BrowsePage(self)
+        self.offline.changed.connect(self.home.downloads_changed)
+        self.offline.online_changed.connect(self._online_changed)
+        self.offline.start()
         self._build_home_bar()
         self.stack = QStackedWidget()
         self.stack.addWidget(self.home)
@@ -753,6 +758,22 @@ class MainWindow(QMainWindow):
             return self.play(ch)
         item = as_vod(ch)
         self.play_ondemand(item, item.url, info, start=0.0 if from_start else self.resume_start(item))
+
+    def play_offline(self, ch):
+        """Título da seção Baixados (sem a lista carregada ou sem internet): toca o arquivo do PC."""
+        if not self.offline.local_file(ch.url):
+            return self._info("Ainda não terminou de baixar.")
+        self.show_player()
+        item = as_vod(ch)
+        self.play_ondemand(item, item.url, start=self.resume_start(item))
+
+    def _online_changed(self, online):
+        self.home.set_online(online)
+        if not online:
+            self._info("Sem internet: os filmes e episódios baixados continuam funcionando (seção Baixados).", 10)
+            if self.stack.currentWidget() is self.home and self.home.state == ("home",) and \
+                    self.offline.entries():
+                self.home.open_section("downloads")
 
     def play_episode(self, ch, episodes, title):
         """Episódio: a temporada vira a lista do player e os seguintes tocam em sequência."""
@@ -1458,6 +1479,10 @@ class MainWindow(QMainWindow):
         self.vod = {"url": url, "info": info, "live": live, "next": list(playlist or []), "start": start,
                     "saved_at": 0.0, "ended": False}
         self.current = item
+        local = self.offline.local_file(item.url)
+        if local:   # baixado: toca do disco (sem internet também); item.url continua a chave do "continuar"
+            url = local
+            log.info("Tocando o arquivo baixado: %s", local)
         self.stream = (url, list(item.opts))
         self.player.stop()
         self.timeshift.close_all()
@@ -3292,6 +3317,7 @@ class MainWindow(QMainWindow):
         self.overlay.close()
         self.player.stop()
         self.timeshift.shutdown()
+        self.offline.shutdown()
         self.remote.stop()
         if self.dubber:
             self.dubber.stop()

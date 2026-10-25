@@ -8,7 +8,7 @@ import time
 from PyQt6.QtCore import QAbstractListModel, QEvent, QModelIndex, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import (
-    QApplication, QButtonGroup, QFrame, QHBoxLayout, QLabel, QLineEdit, QListView, QPushButton, QScrollArea, QSizePolicy,
+    QApplication, QButtonGroup, QFrame, QHBoxLayout, QLabel, QLineEdit, QListView, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
     QStackedWidget, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget,
 )
 
@@ -32,6 +32,7 @@ SECTIONS = [
     ("shows", "Programas", "tv", (cat.VIDEOS,)),
     ("radios", "Rádios", "music", (cat.RADIOS,)),
     ("mylist", "Minha lista", "heart", None),
+    ("downloads", "Baixados", "download", None),
     ("adult", "Adultos", "flag", (cat.ADULT,)),
 ]
 SECTION_TITLE = {cat.LIVE: "Ao vivo", cat.MOVIES: "Filmes", cat.SERIES: "Séries", cat.VIDEOS: "Programas e vídeos",
@@ -843,9 +844,12 @@ class SeriesView(QWidget):
                                     text="  Do começo", icon_size=18)
         self.fav_btn = make_btn("heart", "Guardar na Minha lista", self._toggle_fav, kind="ghost",
                                 text="  Minha lista", icon_size=18)
+        self.dl_btn = make_btn("download", "Baixar para assistir sem internet", self._toggle_download, kind="ghost",
+                               text="  Baixar", icon_size=18)
         btns.addWidget(self.play_btn)
         btns.addWidget(self.restart_btn)
         btns.addWidget(self.fav_btn)
+        btns.addWidget(self.dl_btn)
         btns.addStretch(1)
         info.addLayout(btns)
         info.addStretch(1)
@@ -907,6 +911,7 @@ class SeriesView(QWidget):
         self.movie, self.movie_ctx, self.node = ch, ctx, None
         self.seasons.hide()
         self.episodes.hide()
+        self.dl_state()
         path = page.catalog.path_of(ch)
         self.kicker.setText((path[1] if len(path) > 1 else "Filme").upper())
         self.title.setText(display_title(ch.name))
@@ -1031,6 +1036,7 @@ class SeriesView(QWidget):
         eps = sorted(self.page.catalog.items(path), key=cat.episode_order)
         self.ep_model.set_items(eps)
         self.episodes.setProperty("ctx", self.season)
+        self.dl_state()
         self.episodes.verticalScrollBar().setValue(0)
 
     def _play_main(self):
@@ -1050,6 +1056,61 @@ class SeriesView(QWidget):
         if self._just_opened():
             return
         self.page.play_episode(self.node, ch)
+
+    def _dl_targets(self):
+        """Filme aberto, ou os episódios da temporada que está na tela."""
+        if self.movie is not None:
+            return [self.movie]
+        return sorted(self.page.catalog.items(self.season), key=cat.episode_order) if self.season else []
+
+    def dl_state(self):
+        """Texto do botão Baixar conforme o que já está no PC."""
+        off = self.page.win.offline
+        items = self._dl_targets()
+        states = [off.state(c.url) for c in items]
+        done = sum(1 for st, _p in states if st == "concluido")
+        busy = [(st, pct) for st, pct in states if st in ("fila", "baixando")]
+        failed = sum(1 for st, _p in states if st in ("erro", "pausado"))
+        series = self.movie is None
+        if items and done == len(items):
+            text, ic, color = ("  Temporada baixada" if series else "  Baixado"), "check", "accent"
+            tip = "Já está no PC: toca mesmo sem internet. Clique para apagar o arquivo."
+        elif busy:
+            pct = busy[0][1] if not series else int(100 * done / len(items))
+            text, ic, color = (f"  Baixando {pct}%" if pct else "  Na fila"), "download", "accent"
+            tip = "Baixando para assistir sem internet. Clique para cancelar."
+        elif failed:
+            text, ic, color = "  Tentar de novo", "refresh", "text"
+            tip = "O download parou (sem internet ou servidor recusou). Clique para continuar."
+        else:
+            text, ic, color = ("  Baixar temporada" if series else "  Baixar"), "download", "text"
+            tip = "Baixar para assistir sem internet"
+        self.dl_btn.setText(text)
+        self.dl_btn.setToolTip(tip)
+        set_btn_icon(self.dl_btn, ic, color)
+        self.dl_btn.setVisible(bool(items))
+
+    def _toggle_download(self):
+        if self._just_opened():
+            return
+        off = self.page.win.offline
+        items = self._dl_targets()
+        states = [off.state(c.url)[0] for c in items]
+        if items and all(st == "concluido" for st in states) or any(st in ("fila", "baixando") for st in states):
+            what = "esta temporada" if self.movie is None else "este filme"
+            done = all(st == "concluido" for st in states)
+            if QMessageBox.question(self, "Baixados", f"Apagar {what} do PC?" if done else
+                                    f"Cancelar o download de {what}?") != QMessageBox.StandardButton.Yes:
+                return
+            for c in items:
+                off.remove(c.url)
+        else:
+            for c in items:
+                if off.state(c.url)[0] in ("erro", "pausado"):
+                    off.retry(c.url)
+            folder = display_title(self.node.label) if self.node is not None else "Filmes"
+            off.download([c for c in items if off.state(c.url)[0] is None], folder)
+        self.dl_state()
 
     def _fav_item(self):
         return self.movie if self.movie is not None else self.page.catalog.first(self.node)
@@ -1250,6 +1311,13 @@ class BrowsePage(QWidget):
         bl.addStretch(0)
         self.status = QLabel("", objectName="muted")
         bl.addWidget(self.status)
+        self.offline_lbl = QPushButton("  Sem internet — ver o que está baixado", objectName="offlineBadge")
+        self.offline_lbl.setIcon(icon("download", "accent", 16))
+        self.offline_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.offline_lbl.setFlat(True)
+        self.offline_lbl.clicked.connect(lambda: self.open_section("downloads"))
+        self.offline_lbl.hide()
+        bl.addWidget(self.offline_lbl)
         self.extra_bar = QHBoxLayout()   # a janela põe aqui o aviso de atualização e o menu
         self.extra_bar.setSpacing(6)
         bl.addLayout(self.extra_bar)
@@ -1425,7 +1493,7 @@ class BrowsePage(QWidget):
         kids = self.win.cfg["kids"]
         for key, _label, _ic, path in SECTIONS:
             n = catalog.node(path) if (catalog and path) else None
-            visible = key in ("home", "mylist") or bool(n and n.count)
+            visible = key in ("home", "mylist", "downloads") or bool(n and n.count)
             if key == "adult" or (kids and key in ("radios", "live")):
                 visible = visible and not kids
             self.nav_btns[key].setVisible(visible)
@@ -1481,8 +1549,19 @@ class BrowsePage(QWidget):
         m = cat.EPISODE_RE.search(ch.name)
         return cat.episode_label(ch), self._left(ch) or (f"Temporada {int(m.group(1))}" if m else "")
 
+    def _dl_note(self, ch):
+        st, pct = self.win.offline.state(ch.url)
+        if st == "concluido":
+            return "✓ Baixado"
+        if st == "baixando":
+            return f"Baixando {pct}%"
+        return "Na fila para baixar" if st == "fila" else ""
+
     def _left(self, ch):
+        note = self._dl_note(ch) if media_is_video(ch) else ""
         pos = self.win.resume_of(ch)
+        if note:
+            return note
         if pos and pos[0] > 0 and pos[1]:
             mins = int((pos[1] - pos[0]) // 60)
             return f"Faltam {mins} min" if mins > 0 else "Quase no fim"
@@ -1544,6 +1623,8 @@ class BrowsePage(QWidget):
                 seen_titles.add(path[:3])
             cont.append(ch)
         rows.append(("Continuar assistindo", cont, None, False))
+        got = [c for c, st, _p in win.offline.entries() if st == "concluido"]
+        rows.append(("Baixados · assista sem internet", got, None, False))
         favs = [catalog.channels[catalog.by_url[f["url"]]] for f in win.cfg["favorites"] if f.get("url") in catalog.by_url]
         rows.append(("Minha lista", favs, ("__mylist",), False))
         recent_live = []
@@ -1654,6 +1735,8 @@ class BrowsePage(QWidget):
             self._check_nav(state[1])
         elif kind == "mylist":
             self._show_mylist()
+        elif kind == "downloads":
+            self._show_downloads()
         elif kind == "series":
             self.series.show_node(state[1])
             self.stack.setCurrentWidget(self.series)
@@ -1685,6 +1768,8 @@ class BrowsePage(QWidget):
             return
         if key == "mylist":
             return self._go(("mylist",))
+        if key == "downloads":
+            return self._go(("downloads",))
         path = dict((k, p) for k, _l, _i, p in SECTIONS)[key]
         self._go(("path", path))
 
@@ -1782,10 +1867,47 @@ class BrowsePage(QWidget):
         self._go(("search", q), remember=self.state[0] != "search")
 
     # --- tocar
+    def _show_downloads(self):
+        entries = self.win.offline.entries()
+        sec = self.section
+        sec.title.setText("Baixados")
+        done = sum(1 for _c, st, _p in entries if st == "concluido")
+        busy = len(entries) - done
+        if entries:
+            txt = f"   {done} no PC" + (f" · {busy} baixando" if busy else "")
+            sec.count.setText(txt + ("" if self.win.offline.online else " · sem internet: toque o que está aqui"))
+        else:
+            sec.count.setText("   Abra um filme ou série e use o botão Baixar para assistir sem internet")
+        sec.chips1.hide()
+        sec.chips2.hide()
+        sec.grid_wide.hide()
+        sec.grid.show()
+        sec.grid.setProperty("ctx", "Baixados")
+        sec.model.set_items(self.allowed([c for c, _st, _p in entries]))
+        self.stack.setCurrentWidget(sec)
+        self.nav_btns["downloads"].setChecked(True)
+
+    def set_online(self, online):
+        self.offline_lbl.setVisible(not online)
+        if self.state == ("downloads",):
+            self._show_downloads()
+
+    def downloads_changed(self, url):
+        if self.state == ("downloads",) and not url:
+            self._show_downloads()
+        if self.stack.currentWidget() is self.series:
+            self.series.dl_state()
+        self._repaint.start()
+
     def activate(self, e, ctx):
         """Cartão clicado: série/programa abre a página com os episódios, filme abre a página com capa, sinopse
         e elenco (de lá o botão Assistir/Continuar toca); só canal ao vivo toca direto."""
-        if e is None or self.catalog is None:
+        if e is None:
+            return
+        if ctx == "Baixados" and not isinstance(e, CatalogNode) and (
+                self.catalog is None or e.url not in self.catalog.by_url or not self.win.offline.online):
+            return self.win.play_offline(e)   # sem a lista (ou sem internet): toca o arquivo direto
+        if self.catalog is None:
             return
         if isinstance(e, CatalogNode):
             return self._go(("series", e))
