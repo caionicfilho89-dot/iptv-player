@@ -7,19 +7,27 @@ avançar. Os pedaços são baixados uma vez só: o consumo de internet é o mesm
 Canais com o áudio numa lista separada também funcionam: vídeo e áudio são guardados lado a lado
 (os pedaços dos dois têm a mesma numeração). Se o canal não for compatível (não-HLS, VOD…), o
 programa toca direto, como antes.
+
+Conexões: cada canal usa uma sessão HTTP que mantém as conexões abertas (keep-alive), e os pedaços
+pendentes são baixados por várias conexões ao mesmo tempo (CONNS) — o buffer enche mais rápido e se
+recupera logo depois de um engasgo. Se a internet ou o servidor caem, a sessão continua tentando
+reconectar em segundo plano por até RECONNECT_SECONDS enquanto o VLC toca o que já está guardado.
+Com "manter o canal anterior conectado", o canal de antes segue sendo guardado em segundo plano
+(uma conexão a mais): voltar para ele (Ctrl+B) abre na hora, já com o buffer cheio.
 """
 import re
 import shutil
 import threading
 import time
 import urllib.parse
-import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, pyqtSignal
+import requests
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from requests.adapters import HTTPAdapter
 
 from .log import log
 from .net import USER_AGENT
@@ -34,6 +42,9 @@ MAX_HEIGHT = 1080            # qualidade máxima escolhida entre as opções do 
 LIVE_DELAY_OPT = ":adaptive-livedelay=21600000"
 ATTR_RE = re.compile(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)')
 M3U8 = "application/vnd.apple.mpegurl"
+CONNS = 4                    # conexões simultâneas por canal para baixar os pedaços
+RECONNECT_SECONDS = 120      # sem conseguir ler a lista por mais que isso, desiste do canal
+WARM_SECONDS = 600           # o canal anterior, em segundo plano, guarda só os últimos 10 min
 
 
 def _attrs(line):
@@ -80,9 +91,11 @@ class Track:
 class Session(threading.Thread):
     """Baixa um canal continuamente e mantém as listas locais."""
 
-    def __init__(self, sid, url, opts, max_seconds, owner):
+    def __init__(self, sid, url, opts, max_seconds, owner, conns=CONNS):
         super().__init__(name=f"timeshift-{sid}", daemon=True)
         self.sid, self.url, self.max_seconds, self.owner = sid, url, max_seconds, owner
+        self.opts = list(opts)
+        self.conns = max(1, conns)
         self.headers = {"User-Agent": USER_AGENT.decode()}
         for o in opts:
             if o.startswith(":http-user-agent="):
@@ -100,13 +113,23 @@ class Session(threading.Thread):
         self.buffered = 0.0          # segundos guardados
         self.video = self.audio = None
         self.audio_info = ""         # atributos do EXT-X-MEDIA de áudio para a lista principal local
+        self.reconnecting = False    # a lista do canal parou de responder; tentando de novo
+        # conexões reaproveitadas (keep-alive): sem abrir uma conexão nova (e TLS) a cada pedaço
+        self.http = requests.Session()
+        self.http.headers.update(self.headers)
+        adapter = HTTPAdapter(pool_connections=4, pool_maxsize=self.conns + 2, max_retries=0)
+        self.http.mount("http://", adapter)
+        self.http.mount("https://", adapter)
+        self.pool = ThreadPoolExecutor(self.conns, thread_name_prefix=f"timeshift-{sid}-dl")
 
     # ---- rede
     def _get(self, url, binary=False):
-        req = urllib.request.Request(url, headers=self.headers)
-        with urllib.request.urlopen(req, timeout=15) as r:
-            data = r.read()
-            return (data if binary else data.decode("utf-8", "replace")), r.geturl()
+        try:
+            with self.http.get(url, timeout=15) as r:
+                r.raise_for_status()
+                return (r.content if binary else r.content.decode("utf-8", "replace")), r.url
+        except requests.RequestException as e:   # o resto do código trata falhas de rede como OSError
+            raise OSError(str(e)) from e
 
     def _choose_tracks(self):
         """Lista de vídeo escolhida (até 1080p) e, se houver, a lista de áudio separada dela."""
@@ -144,20 +167,28 @@ class Session(threading.Thread):
             vurl, aurl = self._choose_tracks()
             self.video = Track("v", vurl)
             self.audio = Track("a", aurl) if aurl else None
-            last_seq, errors = None, 0
+            last_seq, errors, down_since = None, 0, None
             while not self.stop_ev.is_set():
                 try:
                     for t in filter(None, (self.video, self.audio)):
                         self._refresh(t, last_seq)
-                    errors = 0
+                    if self.reconnecting:
+                        log.info("Timeshift: canal reconectado depois de %.0f s", time.monotonic() - down_since)
+                    errors, down_since, self.reconnecting = 0, None, False
                 except Unsupported:
                     raise
                 except OSError as e:
                     errors += 1
-                    if errors >= 4:
+                    # antes de começar desiste logo (toca direto); depois, reconecta em segundo plano
+                    # enquanto o VLC toca o que já está guardado
+                    if not self.ready and errors >= 4:
                         raise
-                    log.warning("Timeshift: falha ao ler a lista (%s), tentando de novo", e)
-                    self.stop_ev.wait(2)
+                    down_since = down_since or time.monotonic()
+                    if time.monotonic() - down_since > RECONNECT_SECONDS:
+                        raise
+                    self.reconnecting = True
+                    log.warning("Timeshift: falha ao ler a lista (%s), reconectando", e)
+                    self.stop_ev.wait(min(10, 2 * errors))
                     continue
                 # pedaços prontos: vídeo (e áudio com o mesmo número, quando o áudio é separado)
                 seqs = sorted(s for s in self.video.pending
@@ -166,7 +197,7 @@ class Session(threading.Thread):
                     if self.audio and self.video.pending and not seqs:
                         raise Unsupported("vídeo e áudio com numeração diferente")
                     seqs = seqs[-START_SEGMENTS:]
-                self._download_batch(seqs, parallel=last_seq is None)
+                self._download_batch(seqs)
                 if seqs:
                     last_seq = seqs[-1]
                 for t in filter(None, (self.video, self.audio)):  # esquece o que ficou para trás
@@ -176,6 +207,8 @@ class Session(threading.Thread):
             log.info("Timeshift indisponível neste canal: %s", e)
             self.owner._emit_failed(self.sid)
         except Exception as e:  # noqa: BLE001
+            if self.stop_ev.is_set():
+                return   # fechada de propósito (troca de canal)
             log.warning("Timeshift parou: %s", e)
             self.owner._emit_failed(self.sid)
 
@@ -217,15 +250,18 @@ class Session(threading.Thread):
         except OSError:
             return None  # _store tenta de novo
 
-    def _download_batch(self, seqs, parallel):
+    def _download_batch(self, seqs):
         tracks = [t for t in (self.video, self.audio) if t]
         datas = {}
-        if parallel and seqs:
-            # primeiros pedaços em paralelo: o canal abre quase tão rápido quanto direto
+        if seqs:
+            # pedaços em paralelo, por várias conexões: o canal abre quase tão rápido quanto direto
+            # e, depois de um engasgo, os pedaços atrasados chegam juntos
             jobs = [(t, s) for s in seqs for t in tracks]
-            with ThreadPoolExecutor(len(jobs)) as ex:
-                for (t, s), d in zip(jobs, ex.map(lambda j: self._fetch(j[0].pending[j[1]][1]), jobs)):
+            try:
+                for (t, s), d in zip(jobs, self.pool.map(lambda j: self._fetch(j[0].pending[j[1]][1]), jobs)):
                     datas[(t.name, s)] = d
+            except (RuntimeError, CancelledError):   # sessão fechada no meio
+                return
         for s in seqs:
             if self.stop_ev.is_set():
                 return
@@ -368,8 +404,13 @@ class Session(threading.Thread):
         p = self.dir / name
         return p if p.parent == self.dir and p.exists() else None
 
+    def alive(self):
+        return self.is_alive() and not self.stop_ev.is_set()
+
     def close(self):
         self.stop_ev.set()
+        self.pool.shutdown(wait=False, cancel_futures=True)
+        self.http.close()
         shutil.rmtree(self.dir, ignore_errors=True)
 
 
@@ -379,11 +420,14 @@ class Timeshift(QObject):
     failed = pyqtSignal(int)
     exported = pyqtSignal(str, str)  # arquivo salvo, mensagem de erro ("" = deu certo)
 
-    def __init__(self, max_minutes=60, instance=None, parent=None):
+    def __init__(self, max_minutes=60, instance=None, parent=None, conns=CONNS, keep_prev=False):
         super().__init__(parent)
         self.max_seconds = max_minutes * 60
         self.instance = instance     # VLC usado para juntar vídeo + áudio ao salvar trechos
+        self.conns = conns           # conexões simultâneas por canal
+        self.keep_prev = keep_prev   # mantém o canal anterior sendo guardado em segundo plano
         self.session = None
+        self.warm = None             # canal anterior, ainda conectado
         self._sid = 0
         shutil.rmtree(TS_DIR, ignore_errors=True)  # sobras de uma sessão anterior
         owner = self
@@ -393,10 +437,10 @@ class Timeshift(QObject):
                 pass
 
             def do_GET(self):
-                s = owner.session
                 path, _, query = self.path.partition("?")
                 parts = path.strip("/").split("/")
-                if not s or len(parts) != 2 or parts[0] != str(s.sid):
+                s = next((x for x in (owner.session, owner.warm) if x and parts[0] == str(x.sid)), None)
+                if not s or len(parts) != 2:
                     return self.send_error(404)
                 q = {k: v[0] for k, v in urllib.parse.parse_qs(query).items()}
                 num = {k: int(v) for k, v in q.items() if k in ("from", "to") and v.isdigit()}
@@ -429,17 +473,52 @@ class Timeshift(QObject):
         threading.Thread(target=self.server.serve_forever, name="timeshift-http", daemon=True).start()
 
     def open(self, url, opts):
-        """Começa a guardar um canal; devolve o id da sessão (o sinal ready/failed traz o mesmo id)."""
-        self.close()
+        """Começa a guardar um canal; devolve o id da sessão (o sinal ready/failed traz o mesmo id).
+
+        Se o canal ainda está conectado em segundo plano (era o anterior), reaproveita: abre na hora."""
+        w = self.warm
+        if w and w.url == url and w.opts == list(opts) and w.alive():
+            self.warm = None
+            self.park()
+            self.session = w
+            w.max_seconds = self.max_seconds
+            log.info("Timeshift: canal anterior ainda conectado, abrindo na hora (%.0f s guardados)", w.buffered)
+            if w.ready:   # depois do open() devolver o id, para quem chamou reconhecer a sessão
+                QTimer.singleShot(0, lambda: self._emit_ready(w.sid))
+            return w.sid
+        self.park()
         self._sid += 1
-        self.session = Session(self._sid, url, opts, self.max_seconds, self)
+        self.session = Session(self._sid, url, opts, self.max_seconds, self, self.conns)
         self.session.start()
         return self._sid
+
+    def park(self):
+        """Trocando de canal: o atual fica conectado em segundo plano (se ligado) ou é fechado."""
+        s, self.session = self.session, None
+        if not s:
+            return
+        if self.keep_prev and s.alive() and s.ready:
+            if self.warm:
+                self.warm.close()
+            s.max_seconds = min(s.max_seconds, WARM_SECONDS)
+            self.warm = s
+        else:
+            s.close()
 
     def close(self):
         if self.session:
             self.session.close()
             self.session = None
+
+    def close_all(self):
+        self.close()
+        if self.warm:
+            self.warm.close()
+            self.warm = None
+
+    def reconnecting(self):
+        s = self.session
+        return bool(s and s.reconnecting)
 
     def local_url(self, sid, from_seq=None):
         url = f"http://127.0.0.1:{self.port}/{sid}/live.m3u8"
@@ -507,7 +586,7 @@ class Timeshift(QObject):
         return (self.local_url(s.sid, seq), start) if seq is not None else (None, 0.0)
 
     def shutdown(self):
-        self.close()
+        self.close_all()
         self.server.shutdown()
 
     # chamados pela tarefa da sessão

@@ -171,6 +171,27 @@ class SettingsDialog(QDialog):
                                    "Tudo é apagado ao trocar de canal ou fechar o programa.")
         lay.addLayout(_row(self.ts_on, QLabel("Guardar os últimos"), self.ts_minutes))
 
+        lay.addWidget(QLabel("Conexão e cache", objectName="h2"))
+        self.net_cache = QComboBox()
+        for label, v in (("1,5 s (abre mais rápido)", 1500), ("3 s", 3000), ("5 s", 5000),
+                         ("10 s (internet instável)", 10000), ("20 s", 20000)):
+            self.net_cache.addItem(label, v)
+        self.net_cache.setCurrentIndex(max(0, self.net_cache.findData(cfg["net_cache_ms"])))
+        self.net_cache.setToolTip("Quanto o VLC guarda na memória antes de tocar. Mais cache = menos travadas "
+                                  "quando a internet oscila, mas o canal demora um pouco mais para abrir.")
+        self.net_conns = QComboBox()
+        for label, v in (("1 conexão", 1), ("2 conexões", 2), ("4 conexões", 4), ("8 conexões", 8)):
+            self.net_conns.addItem(label, v)
+        self.net_conns.setCurrentIndex(max(0, self.net_conns.findData(cfg["net_conns"])))
+        self.net_conns.setToolTip("Os pedaços do canal (e os downloads de filmes) são baixados por várias conexões "
+                                  "ao mesmo tempo: o buffer enche mais rápido. Se o servidor recusar, volta para 1.")
+        lay.addLayout(_row(QLabel("Cache de rede"), self.net_cache, QLabel("Baixar com"), self.net_conns))
+        self.keep_prev = QCheckBox("Manter o canal anterior conectado em segundo plano (voltar com Ctrl+B abre na hora)")
+        self.keep_prev.setChecked(cfg["keep_prev"])
+        self.keep_prev.setToolTip("Usa uma conexão a mais. Contas IPTV que só permitem 1 tela ao mesmo tempo "
+                                  "podem bloquear — nesse caso deixe desmarcado.")
+        lay.addWidget(self.keep_prev)
+
         lay.addWidget(QLabel("Geral", objectName="h2"))
         self.auto_scan = QCheckBox("Testar todos os canais em segundo plano a cada 6 horas (esconde os fora do ar "
                                    "quando \"Ocultar offline\" está marcado)")
@@ -233,6 +254,9 @@ class SettingsDialog(QDialog):
         self.cfg["auto_scan"] = self.auto_scan.isChecked()
         self.cfg["merge_dupes"] = self.merge_dupes.isChecked()
         self.cfg["timeshift_minutes"] = self.ts_minutes.currentData()
+        self.cfg["net_cache_ms"] = self.net_cache.currentData()
+        self.cfg["net_conns"] = self.net_conns.currentData()
+        self.cfg["keep_prev"] = self.keep_prev.isChecked()
         self.cfg["dub_duck"] = self.dub_duck.currentData()
         self._save_epg_fields()
         self.cfg.save()

@@ -174,7 +174,8 @@ class MainWindow(QMainWindow):
         for item in self.cfg["schedule"]:
             if item.get("state") == "recording":
                 item["state"] = "waiting"  # o programa fechou no meio: volta a gravar se ainda estiver passando
-        self.timeshift = Timeshift(self.cfg["timeshift_minutes"], self.instance, self)
+        self.timeshift = Timeshift(self.cfg["timeshift_minutes"], self.instance, self,
+                                   conns=self.cfg["net_conns"], keep_prev=self.cfg["keep_prev"])
         self.timeshift.ready.connect(self._ts_ready)
         self.timeshift.failed.connect(self._ts_failed)
         self.timeshift.exported.connect(self._clip_saved)
@@ -1459,7 +1460,7 @@ class MainWindow(QMainWindow):
         self.current = item
         self.stream = (url, list(item.opts))
         self.player.stop()
-        self.timeshift.close()
+        self.timeshift.close_all()
         self._ts_sid = None
         self._set_media(url, list(item.opts) + ([f":start-time={int(start)}"] if start > 5 else []))
         self._begin_playback()
@@ -1616,7 +1617,7 @@ class MainWindow(QMainWindow):
         self._yt_pending = None
         if youtube.is_youtube(stream[0]):
             self._ts_sid = None
-            self.timeshift.close()
+            self.timeshift.park()
             self._yt_pending = stream[0]
             self.yt.start(stream[0])
             return
@@ -1625,7 +1626,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(START_WAIT_MS, lambda: self._ts_too_slow(sid))
         else:
             self._ts_sid = None
-            self.timeshift.close()
+            self.timeshift.park()
             self._set_media(stream[0], stream[1])
 
     def _yt_resolved(self, url, video):
@@ -1640,6 +1641,9 @@ class MainWindow(QMainWindow):
 
     def _set_media(self, url, opts):
         media = self.instance.media_new(url)
+        if not any(o.startswith(":network-caching=") for o in opts):
+            # cache de rede escolhido nas configurações: mais cache = menos engasgos, abre um pouco depois
+            media.add_option(f":network-caching={int(self.cfg['net_cache_ms'])}")
         for o in opts:
             media.add_option(o)
         self.player.set_media(media)
@@ -1648,6 +1652,10 @@ class MainWindow(QMainWindow):
     def _ts_ready(self, sid, url):
         if sid == self._ts_sid and self.current:
             self.started_at = time.monotonic()  # o tempo guardando os primeiros pedaços não conta como demora
+            # canal que estava conectado em segundo plano já tem minutos guardados: começa no ao vivo
+            live, start = self.timeshift.url_at(self._ts_live_point() - self.timeshift.target())
+            if live:
+                url, self._ts_origin = live, start
             self._set_media(url, [LIVE_DELAY_OPT])
 
     def _ts_failed(self, sid):
@@ -2067,7 +2075,7 @@ class MainWindow(QMainWindow):
         self._record_watch()
         self.vod = None
         self.player.stop()
-        self.timeshift.close()
+        self.timeshift.close_all()
         self._ts_sid = None
         self._ts_buttons()
         self.explore_btn.setChecked(False)
@@ -2978,7 +2986,7 @@ class MainWindow(QMainWindow):
         self.dub_btn.setChecked(False)
         self._mosaic_prev = self.current
         self.player.stop()
-        self.timeshift.close()
+        self.timeshift.close_all()
         self._ts_sid = None
         self.current = None
         self.video.set_message("Mosaico aberto em outra janela")
@@ -3241,6 +3249,11 @@ class MainWindow(QMainWindow):
         old_voice = self.cfg["dub_voice"]
         old_merge = self.cfg["merge_dupes"]
         dlg.exec()
+        self.timeshift.conns = self.cfg["net_conns"]
+        self.timeshift.keep_prev = self.cfg["keep_prev"]
+        if not self.cfg["keep_prev"] and self.timeshift.warm:
+            self.timeshift.warm.close()
+            self.timeshift.warm = None
         if self.cfg["merge_dupes"] != old_merge:
             self._select_category(self.category, from_nav=None)
         self._apply_caption_prefs()

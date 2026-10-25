@@ -42,6 +42,8 @@ DEFAULTS = {
     "captions": False, "cap_model": "small", "cap_source": "auto", "cap_original": False, "cap_scale": 1.0, "cap_translator": "google",
     "dub_voice": "", "dub_duck": 0.25,
     "timeshift": True, "timeshift_minutes": 30,
+    # conexão: cache de rede do VLC (ms), conexões simultâneas por canal/download, canal anterior em segundo plano
+    "net_cache_ms": 1500, "net_conns": 4, "keep_prev": False,
     "schedule": [],
     "resume": {},  # onde parou em filmes/episódios: {url: [segundos (-1 = assistido), duração, quando]}
     "region": "all",  # filtro de país da tela Início (themes.REGIONS)
