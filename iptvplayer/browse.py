@@ -18,6 +18,7 @@ from .metadata import split_cast, stream_id
 from .net import LogoLoader
 from .theme import T, icon, icon_pixmap
 from .widgets import make_btn, set_btn_icon
+from .sportsview import SportsView
 
 ROW_MAX = 30          # cartões por fileira (o resto fica no "Ver tudo")
 HERO_SLIDES = 6
@@ -26,6 +27,7 @@ HERO_EVERY_MS = 9000
 # seções da barra lateral: chave, rótulo, ícone, caminho no catálogo
 SECTIONS = [
     ("home", "Início", "home", None),
+    ("sports", "Jogos", "ball", None),
     ("live", "Ao vivo", "live", (cat.LIVE,)),
     ("movies", "Filmes", "film", (cat.MOVIES,)),
     ("series", "Séries", "layers", (cat.SERIES,)),
@@ -1351,6 +1353,8 @@ class BrowsePage(QWidget):
         self.stack.addWidget(self.results)
         self.actor = ActorView(self)
         self.stack.addWidget(self.actor)
+        self.sports = SportsView(self)
+        self.stack.addWidget(self.sports)
         self.meta.cast_progress.connect(self._on_cast_progress)
         self._by_sid = None      # id do filme na conta -> item da lista (montado quando precisa)
         self._title_nodes = None  # nome da série sem acento -> CatalogNode
@@ -1482,7 +1486,10 @@ class BrowsePage(QWidget):
         title, sub = self.card_text(e)
         plot = self.short_plot(e, 260) if isinstance(e, CatalogNode) or not media_is_video(e) or \
             self.meta.movie_info(e, fetch=False) else ""
-        lines = [f"<b>{title}</b>"] + ([sub] if sub else []) + ([f"<i>{plot}</i>"] if plot else [])
+        why = self.win.recommender.reason(e)   # "Porque você gosta de terror e mistério"
+        lines = [f"<b>{title}</b>"] + ([sub] if sub else []) + \
+            ([f"<span style='color:{T['accent']}'>{why}</span>"] if why and why != "Parecido" else []) + \
+            ([f"<i>{plot}</i>"] if plot else [])
         return "<div style='max-width:340px'>" + "<br>".join(lines) + "</div>"
 
     # --- dados
@@ -1493,7 +1500,7 @@ class BrowsePage(QWidget):
         kids = self.win.cfg["kids"]
         for key, _label, _ic, path in SECTIONS:
             n = catalog.node(path) if (catalog and path) else None
-            visible = key in ("home", "mylist", "downloads") or bool(n and n.count)
+            visible = key in ("home", "sports", "mylist", "downloads") or bool(n and n.count)
             if key == "adult" or (kids and key in ("radios", "live")):
                 visible = visible and not kids
             self.nav_btns[key].setVisible(visible)
@@ -1625,6 +1632,8 @@ class BrowsePage(QWidget):
         rows.append(("Continuar assistindo", cont, None, False))
         got = [c for c, st, _p in win.offline.entries() if st == "concluido"]
         rows.append(("Baixados · assista sem internet", got, None, False))
+        for title, items in win.recommender.rows():   # pelo seu gosto (recommend.py)
+            rows.append((title, items, None, False))
         favs = [catalog.channels[catalog.by_url[f["url"]]] for f in win.cfg["favorites"] if f.get("url") in catalog.by_url]
         rows.append(("Minha lista", favs, ("__mylist",), False))
         recent_live = []
@@ -1675,6 +1684,8 @@ class BrowsePage(QWidget):
         for title, items, _see, wide in rows:
             if title == "Continuar assistindo" and items:
                 slides.append((items[0], "Continuar assistindo"))
+        news = next((r[1] for r in rows if r[0] == "Novidades para você"), [])
+        slides += [(e, "Novidade para você") for e in news[:2] if self.image_of(e)]
         movies = next((r[1] for r in rows if r[0] in ("Lançamentos", "Destaques em filmes")), [])
         pool = [c for c in movies[:60] if self.catalog.logo_of(c)]
         random.shuffle(pool)
@@ -1737,6 +1748,10 @@ class BrowsePage(QWidget):
             self._show_mylist()
         elif kind == "downloads":
             self._show_downloads()
+        elif kind == "sports":
+            self.sports.refresh()
+            self.stack.setCurrentWidget(self.sports)
+            self.nav_btns["sports"].setChecked(True)
         elif kind == "series":
             self.series.show_node(state[1])
             self.stack.setCurrentWidget(self.series)
@@ -1770,6 +1785,8 @@ class BrowsePage(QWidget):
             return self._go(("mylist",))
         if key == "downloads":
             return self._go(("downloads",))
+        if key == "sports":
+            return self._go(("sports",))
         path = dict((k, p) for k, _l, _i, p in SECTIONS)[key]
         self._go(("path", path))
 

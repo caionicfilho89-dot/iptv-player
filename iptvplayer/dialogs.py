@@ -171,6 +171,38 @@ class SettingsDialog(QDialog):
                                    "Tudo é apagado ao trocar de canal ou fechar o programa.")
         lay.addLayout(_row(self.ts_on, QLabel("Guardar os últimos"), self.ts_minutes))
 
+        lay.addWidget(QLabel("Jogos e esportes", objectName="h2"))
+        self.sp_auto = QCheckBox("Avisar quando um jogo for começar (tira os jogos do guia de programação)")
+        self.sp_auto.setChecked(cfg["sports_auto"])
+        lay.addWidget(self.sp_auto)
+        self.sp_lead = QComboBox()
+        for label, v in (("5 minutos antes", 5), ("10 minutos antes", 10), ("15 minutos antes", 15),
+                         ("30 minutos antes", 30)):
+            self.sp_lead.addItem(label, v)
+        self.sp_lead.setCurrentIndex(max(0, self.sp_lead.findData(cfg["sports_lead"])))
+        self.sp_voice = QCheckBox("Falar o aviso (voz do Windows)")
+        self.sp_voice.setChecked(cfg["sports_voice"])
+        lay.addLayout(_row(QLabel("Avisar"), self.sp_lead, self.sp_voice))
+        self.sp_mine = QCheckBox("Só jogos que passam nos meus canais")
+        self.sp_mine.setChecked(cfg["sports_mine"])
+        self.sp_replays = QCheckBox("Avisar também reprises")
+        self.sp_replays.setChecked(cfg["sports_replays"])
+        lay.addLayout(_row(self.sp_mine, self.sp_replays))
+        from .sports import SPORTS
+        self.sp_kinds = {}
+        kinds_row = []
+        for key, name, emoji, _w in SPORTS:
+            b = QCheckBox(f"{emoji} {name}")
+            b.setChecked(not cfg["sports_kinds"] or key in cfg["sports_kinds"])
+            self.sp_kinds[key] = b
+            kinds_row.append(b)
+        for i in range(0, len(kinds_row), 4):
+            lay.addLayout(_row(*kinds_row[i:i + 4]))
+        self.sp_teams = QLineEdit(", ".join(cfg["sports_teams"]))
+        self.sp_teams.setPlaceholderText("Ex.: Flamengo, Corinthians, Lakers  (vazio = todos os times)")
+        self.sp_teams.setToolTip("Só avisa jogos desses times ou campeonatos. Separe por vírgula.")
+        lay.addLayout(_row(QLabel("Só os times"), self.sp_teams))
+
         lay.addWidget(QLabel("Conexão e cache", objectName="h2"))
         self.net_cache = QComboBox()
         for label, v in (("1,5 s (abre mais rápido)", 1500), ("3 s", 3000), ("5 s", 5000),
@@ -200,6 +232,9 @@ class SettingsDialog(QDialog):
         self.merge_dupes = QCheckBox("Juntar canais repetidos (fica o melhor link; os outros viram reserva)")
         self.merge_dupes.setChecked(cfg["merge_dupes"])
         lay.addWidget(self.merge_dupes)
+        self.daily_tip = QCheckBox("Dica do dia: avisar uma novidade que combina com o que eu assisto")
+        self.daily_tip.setChecked(cfg["daily_tip"])
+        lay.addWidget(self.daily_tip)
         self.check_upd = QCheckBox("Avisar quando houver uma nova versão do PudimFlix")
         self.check_upd.setChecked(cfg["check_updates"])
         lay.addWidget(self.check_upd)
@@ -244,6 +279,7 @@ class SettingsDialog(QDialog):
         self.cfg["accent"] = self._accent()
         self.cfg["auto_update_lists"] = self.auto_update.isChecked()
         self.cfg["check_updates"] = self.check_upd.isChecked()
+        self.cfg["daily_tip"] = self.daily_tip.isChecked()
         self.cfg["cap_model"] = self.cap_model.currentData()
         self.cfg["cap_source"] = self.cap_source.currentData()
         self.cfg["cap_scale"] = self.cap_scale.currentData()
@@ -257,6 +293,14 @@ class SettingsDialog(QDialog):
         self.cfg["net_cache_ms"] = self.net_cache.currentData()
         self.cfg["net_conns"] = self.net_conns.currentData()
         self.cfg["keep_prev"] = self.keep_prev.isChecked()
+        self.cfg["sports_auto"] = self.sp_auto.isChecked()
+        self.cfg["sports_lead"] = self.sp_lead.currentData()
+        self.cfg["sports_voice"] = self.sp_voice.isChecked()
+        self.cfg["sports_mine"] = self.sp_mine.isChecked()
+        self.cfg["sports_replays"] = self.sp_replays.isChecked()
+        kinds = [k for k, b in self.sp_kinds.items() if b.isChecked()]
+        self.cfg["sports_kinds"] = [] if len(kinds) == len(self.sp_kinds) else kinds
+        self.cfg["sports_teams"] = [t.strip() for t in self.sp_teams.text().split(",") if t.strip()]
         self.cfg["dub_duck"] = self.dub_duck.currentData()
         self._save_epg_fields()
         self.cfg.save()

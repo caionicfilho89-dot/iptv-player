@@ -44,6 +44,12 @@ DEFAULTS = {
     "timeshift": True, "timeshift_minutes": 30,
     # conexão: cache de rede do VLC (ms), conexões simultâneas por canal/download, canal anterior em segundo plano
     "net_cache_ms": 1500, "net_conns": 4, "keep_prev": False,
+    # jogos: avisar antes (minutos), falar o aviso, só nos canais das listas, reprises, esportes ([] = todos),
+    # times favoritos ([] = todos), jogos marcados com "Avisar" e os já anunciados ({chave: início})
+    "sports_auto": True, "sports_lead": 10, "sports_voice": True, "sports_mine": True, "sports_replays": False,
+    "sports_kinds": [], "sports_teams": [], "sports_alerts": {}, "sports_announced": {},
+    # dicas pelo seu gosto: aviso diário com uma novidade, dia da última dica e títulos já indicados
+    "daily_tip": True, "tip_day": "", "tips_shown": [],
     "dl_dir": "", "dl_upload": False,   # assistir sem internet: pasta dos baixados ("" = Vídeos\PudimFlix Downloads)
     "schedule": [],
     "resume": {},  # onde parou em filmes/episódios: {url: [segundos (-1 = assistido), duração, quando]}

@@ -24,6 +24,9 @@ from . import catchup
 from . import sources as src
 from . import xtream
 from . import youtube
+from . import catalog as cat
+from . import sports
+from .recommend import Recommender
 from .audio import AudioEngine
 from .dub import Dubber
 from .captions import CaptionWorker, SubtitleOverlay, missing_deps, video_rect_global
@@ -348,11 +351,16 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.sidebar)
         lay.addWidget(self.splitter, 1)
         self.sidebar.hide()  # o menu antigo saiu: as categorias ficam na tela Início (botão Fontes)
+        self.recommender = Recommender(self)          # dicas pelo seu gosto (fileiras do Início, dica do dia)
         self.offline = OfflineLibrary(self.cfg, self)   # filmes/episódios baixados (assistir sem internet)
         self.home = BrowsePage(self)
         self.offline.changed.connect(self.home.downloads_changed)
         self.offline.online_changed.connect(self._online_changed)
         self.offline.start()
+        self._sports, self._sports_at = [], 0.0       # agenda de jogos: [(Game, [canais das listas])]
+        self.announcer = sports.Announcer(self)       # anúncios falados dos jogos
+        self.announcer.speaking.connect(self._duck_for_announce)
+        self._duck_vol = None
         self._build_home_bar()
         self.stack = QStackedWidget()
         self.stack.addWidget(self.home)
@@ -725,6 +733,8 @@ class MainWindow(QMainWindow):
             self.scan_btn.hide()   # testar centenas de milhares de links de uma conta pode bloqueá-la
             self.meta.start(catalog.channels)
         self.home.set_catalog(self.catalog)
+        if catalog is not None:
+            QTimer.singleShot(20000, self._daily_tip)
         if self._lib_dirty:
             QTimer.singleShot(0, self._rebuild_library)
 
@@ -1352,6 +1362,7 @@ class MainWindow(QMainWindow):
 
     def _on_epg_updated(self):
         self._guide_known.clear()
+        QTimer.singleShot(1500, self._sports_rebuild)
         self.view.viewport().update()
         self.home.update_views()
         self._update_now_info()
@@ -2290,6 +2301,8 @@ class MainWindow(QMainWindow):
                                       f" · {self.recorder.ch.name} · {mb:.0f} MB")
         if int(now) % 5 == 0:
             self._check_schedule(now)
+        if int(now) % 30 == 0:
+            self._check_games(now)
         if int(now) % 600 == 0:
             self._maybe_auto_scan()
         if self.remote.running:
@@ -2462,8 +2475,8 @@ class MainWindow(QMainWindow):
             self.cfg["schedule"].remove(item)
             self.cfg.save()
 
-    def _notify(self, title, text, ch=None):
-        """Aviso do Windows (canto da tela); clicar nele leva ao canal."""
+    def _notify(self, title, text, ch=None, action=None):
+        """Aviso do Windows (canto da tela); clicar nele leva ao canal (ou faz action)."""
         from PyQt6.QtWidgets import QSystemTrayIcon
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
@@ -2473,10 +2486,17 @@ class MainWindow(QMainWindow):
             self.tray.messageClicked.connect(self._notify_clicked)
             self.tray.show()
         self._notify_ch = ch
+        self._notify_action = action
         self.tray.showMessage(title, text, app_icon(), 15000)
 
     def _notify_clicked(self):
         ch = getattr(self, "_notify_ch", None)
+        action = getattr(self, "_notify_action", None)
+        if action:
+            self.showNormal() if self.isMinimized() else None
+            self.raise_()
+            self.activateWindow()
+            return action()
         if ch:
             self.showNormal() if self.isMinimized() else None
             self.raise_()
@@ -2517,6 +2537,141 @@ class MainWindow(QMainWindow):
                 changed = True
         if changed:
             self.cfg.save()
+
+    # ================================================================ jogos (agenda esportiva tirada do guia)
+    def _sports_rebuild(self):
+        """Refaz os jogos de hoje e amanhã e em quais canais das suas listas cada um passa."""
+        now = time.time()
+        self._sports, self._sports_at = [], now
+        if not self.epg.has_data():
+            return
+        t0 = time.monotonic()
+        games = sports.find_games(self.epg.guide, now - 4 * 3600, now + 40 * 3600)
+        keys = {k for g in games for k in g.channels}
+        by_key = {}
+        pool = self.catalog.items((cat.LIVE,)) if self.catalog else list(self.all_channels)
+        for ch in pool:
+            if media_is_video(ch):
+                continue
+            k = self.epg._channel_key(ch)
+            if k in keys:
+                by_key.setdefault(k, []).append(ch)
+        for g in games:
+            if g.stop <= now:
+                continue
+            chs, seen = [], set()
+            for k in g.channels:
+                for ch in by_key.get(k, []):
+                    n = norm_channel_name(ch.name)
+                    if n not in seen and self.status_of(ch.url) != "dead":
+                        seen.add(n)
+                        chs.append(ch)
+            self._sports.append((g, chs))
+        log.info("Jogos: %d no guia (%d nos seus canais) em %.1f s", len(self._sports),
+                 sum(1 for _g, c in self._sports if c), time.monotonic() - t0)
+        if self.home.state == ("sports",):
+            self.home.sports.refresh()
+
+    def sport_games(self):
+        """[(Game, canais)] que ainda não acabaram."""
+        now = time.time()
+        if now - self._sports_at > 1800:
+            self._sports_rebuild()
+        return [(g, c) for g, c in self._sports if g.stop > now]
+
+    def watch_game(self, game, channels):
+        if not channels:
+            return self._info("Esse jogo passa num canal que não está nas suas listas.")
+        ch = channels[0]
+        if self.catalog and ch.url in self.catalog.by_url:
+            return self.play_catalog(ch, self.catalog.path_of(ch))
+        self.show_player()
+        self.play(ch)
+
+    def game_alert_on(self, game):
+        return game.key in self.cfg["sports_alerts"]
+
+    def toggle_game_alert(self, game):
+        alerts = self.cfg["sports_alerts"]
+        if game.key in alerts:
+            alerts.pop(game.key)
+        else:
+            alerts[game.key] = game.start
+            self._info(f"{game.emoji} Vou avisar {self.cfg['sports_lead']} min antes de {game.teams}.", 6)
+        self.cfg.save()
+
+    def _check_games(self, now):
+        cfg = self.cfg
+        if not cfg["sports_auto"] and not cfg["sports_alerts"]:
+            return
+        done = cfg["sports_announced"]
+        lead = cfg["sports_lead"] * 60
+        due = []
+        for g, chs in self.sport_games():
+            if g.key in done or not now < g.start <= now + lead:
+                continue
+            if g.key in cfg["sports_alerts"] or (cfg["sports_auto"] and sports.matches_filters(g, cfg)
+                                                 and (chs or not cfg["sports_mine"])):
+                due.append((g, chs))
+                done[g.key] = g.start
+        if not due:
+            return
+        for d in (done, cfg["sports_alerts"]):   # esquece o que já passou
+            for k in [k for k, t in d.items() if t < now - 12 * 3600]:
+                d.pop(k)
+        cfg.save()
+        first = next((c[0] for _g, c in due if c), None)
+        if len(due) == 1:
+            g, chs = due[0]
+            where = f" no {chs[0].name}" if chs else ""
+            self._notify(f"{g.emoji} Vai começar: {g.teams}",
+                         f"{g.competition + ' · ' if g.competition else ''}{hm(g.start)}{where}"
+                         + (" — clique para assistir" if chs else ""), first)
+        else:
+            lines = [f"{hm(g.start)} {g.emoji} {g.teams}" + (f" ({c[0].name})" if c else "") for g, c in due[:4]]
+            more = f"\n+{len(due) - 4} jogos" if len(due) > 4 else ""
+            self._notify(f"{len(due)} jogos vão começar", "\n".join(lines) + more, first)
+        g0 = due[0][0]
+        self._info(f"{g0.emoji} Vai começar: <b>{g0.teams}</b>" + (f" e mais {len(due) - 1}" if len(due) > 1 else ""), 15)
+        if cfg["sports_voice"]:
+            for g, chs in due[:3]:
+                self.announcer.say(sports.spoken(g, chs[0].name if chs else "", max(1, round((g.start - now) / 60))))
+            if len(due) > 3:
+                self.announcer.say(f"E mais {len(due) - 3} jogos. Veja todos na tela Jogos.")
+
+    def _daily_tip(self):
+        """Uma vez por dia: avisa uma novidade do catálogo que combina com o que você gosta."""
+        cfg = self.cfg
+        today = time.strftime("%Y-%m-%d")
+        if not cfg["daily_tip"] or cfg["tip_day"] == today or self.catalog is None:
+            return
+        e = self.recommender.tip(set(cfg["tips_shown"]))
+        if e is None:
+            return
+        from .catalog import CatalogNode, display_title
+        name = display_title(e.label if isinstance(e, CatalogNode) else e.name)
+        why = self.recommender.reason(e) or "Combina com o que você assiste"
+        cfg["tip_day"] = today
+        cfg["tips_shown"] = (cfg["tips_shown"] + [self.recommender.tip_key(e)])[-300:]
+        cfg.save()
+        log.info("Dica do dia: %s (%s)", name, why)
+
+        def open_tip():
+            self.go_home()
+            self.home.activate(e, None)
+        self._notify(f"🍮 Dica do dia: {name}", f"{why} — clique para ver", action=open_tip)
+        self._info(f"🍮 Dica do dia: <b>{name}</b> — {why.lower()}. Veja em \"Novidades para você\" no Início.", 12)
+
+    def _duck_for_announce(self, on):
+        """Abaixa o som do canal enquanto o anúncio fala."""
+        if on and self._duck_vol is None:
+            self._duck_vol = self.player.audio_get_volume()
+            if self._duck_vol > 0:
+                self.player.audio_set_volume(int(self._duck_vol * 0.3))
+        elif not on and self._duck_vol is not None:
+            if self._duck_vol > 0:
+                self.player.audio_set_volume(self._duck_vol)
+            self._duck_vol = None
 
     def _stop_scheduled_recording(self, item):
         path = self.recorder.stop()
