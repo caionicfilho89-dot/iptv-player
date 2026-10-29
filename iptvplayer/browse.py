@@ -19,6 +19,7 @@ from .net import LogoLoader
 from .theme import T, icon, icon_pixmap
 from .widgets import make_btn, set_btn_icon
 from .sportsview import SportsView
+from .banner import TodayBanner
 
 ROW_MAX = 30          # cartões por fileira (o resto fica no "Ver tudo")
 HERO_SLIDES = 6
@@ -1336,6 +1337,8 @@ class BrowsePage(QWidget):
         self.home_lay = QVBoxLayout(body)
         self.home_lay.setContentsMargins(24, 6, 24, 30)
         self.home_lay.setSpacing(24)
+        self.banner = TodayBanner(self)   # hoje: jogos, lançamentos e notícias
+        self.home_lay.addWidget(self.banner)
         self.hero = Hero(self)
         self.home_lay.addWidget(self.hero)
         self.rows_lay = QVBoxLayout()
@@ -1722,6 +1725,7 @@ class BrowsePage(QWidget):
             row.hide()
         if self.hero.isVisible() or not self.hero.slides:
             self.hero.set_slides(self._hero_slides(rows))
+        self.banner.refresh()
 
     def refresh_light(self):
         """Só o que muda ao voltar do player (continuar assistindo, tocando agora)."""

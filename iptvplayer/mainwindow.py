@@ -2571,6 +2571,7 @@ class MainWindow(QMainWindow):
                  sum(1 for _g, c in self._sports if c), time.monotonic() - t0)
         if self.home.state == ("sports",):
             self.home.sports.refresh()
+        self.home.banner.refresh()
 
     def sport_games(self):
         """[(Game, canais)] que ainda não acabaram."""
