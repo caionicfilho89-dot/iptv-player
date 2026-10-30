@@ -1,12 +1,27 @@
 # 🍮 PudimFlix
 
-*(antigo IPTV Player)* — player de IPTV para Windows com visual moderno, feito em Python (PyQt6) com o VLC embutido.
-Vem com milhares de canais abertos que se atualizam sozinhos, mostra o que está passando agora
-e troca de canal sozinho: pula os canais fora do ar e tem **zapping automático**.
-A tela Início é no estilo Netflix: fileiras por tema (Esportes, Notícias, Filmes, Infantil…), separadas
-por IA, com filtro de país e cada canal uma vez só.
+**O player de TV para Windows que legenda e dubla canais estrangeiros em português, ao vivo, com IA rodando no
+seu próprio PC.** Sem assinatura, sem mandar o áudio para a nuvem.
 
-![IPTV Player](docs/screenshot.png)
+![Canal em inglês com legenda em português feita pela IA, ao vivo](docs/legenda-ia.gif)
+
+*Bloomberg Originals (canal aberto, em inglês) com a legenda em português gerada na hora pela IA do PudimFlix.*
+
+### O que nenhum outro player de IPTV faz
+
+| | |
+|---|---|
+| 💬 **Legenda em português de qualquer canal** | A IA ouve o canal (Whisper), traduz (Gemma 3) e mostra a legenda em poucos segundos. Inglês, espanhol, francês e outros idiomas. Mais rápido com placa NVIDIA; também roda só no processador. |
+| 🗣️ **Dublagem ao vivo** | A tradução vira voz em português, com o som original mais baixo por baixo, sincronizada com o vídeo. |
+| ⏸️ **Pausar e voltar a TV ao vivo** | O app guarda os últimos minutos do canal: pause, volte para ver o lance de novo e salve "o que acabou de passar". |
+| 📱 **Controle pelo celular** | Aponte a câmera para o QR code e use o celular como controle remoto, sem instalar nada. |
+| ⚽ **Jogos de hoje** | A tela Início mostra os jogos do dia e em qual dos seus canais vai passar. |
+
+Além disso: milhares de canais abertos que se atualizam sozinhos, guia de programação, pular canal fora do ar,
+zapping automático e visual no estilo Netflix. Você também pode adicionar a sua própria lista (M3U ou login
+Xtream Codes). Feito em Python (PyQt6) com o VLC embutido.
+
+![Tela "Ao vivo" do PudimFlix](docs/ao-vivo.png)
 
 ## ⬇️ Download
 
