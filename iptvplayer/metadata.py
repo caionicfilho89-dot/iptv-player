@@ -27,6 +27,71 @@ CAST_START_DELAY = 30     # s depois de abrir, para não disputar com o carregam
 SAVE_EVERY = 90           # s entre gravações do arquivo dos filmes (fica grande)
 
 
+# busca por assunto: palavras (sem acento, começo de palavra) que aparecem nas sinopses de cada tema
+TOPICS = {
+    "drogas": ["droga", "trafic", "narcotrafic", "narco", "cartel", "cocain", "heroina", "maconha", "crack",
+               "metanfetamin", "viciad", "vicio", "dependente quimic", "dependencia quimica", "overdose",
+               "entorpecent", "chefao do trafico", "boca de fumo", "lsd", "ecstasy"],
+    "mafia": ["mafia", "mafios", "gangster", "crime organizado", "chefao", "cosa nostra", "yakuza", "familia criminosa",
+              "sindicato do crime"],
+    "guerra": ["guerra", "soldad", "batalha", "exercito", "nazist", "combate", "trincheira", "fuzileir", "militar"],
+    "assalto": ["assalt", "roubo", "ladra", "golpe milionario", "furto", "cofre", "banco central"],
+    "prisao": ["prisao", "presidio", "prisioneir", "cadeia", "penitenciari", "detent", "carcere", "fuga da prisao"],
+    "policia": ["policia", "policial", "detetive", "investigador", "delegad", "agente do fbi", "fbi"],
+    "serial killer": ["serial killer", "assassino em serie", "psicopata", "matador"],
+    "zumbi": ["zumbi", "morto-vivo", "mortos-vivos", "infectad"],
+    "vampiro": ["vampir"],
+    "lobisomem": ["lobisom"],
+    "fantasma": ["fantasma", "assombr", "espirito", "possuid", "possessao", "exorcis", "demonio"],
+    "espaco": ["espaco sideral", "astronaut", "nave espacial", "nave", "planeta", "galaxia", "marte", "estacao espacial"],
+    "alienigena": ["alienigena", "extraterrestre", "et ", "invasao alien", "ovni", "disco voador"],
+    "viagem no tempo": ["viagem no tempo", "viaja no tempo", "viajar no tempo", "maquina do tempo", "volta no tempo",
+                        "voltar no tempo", "linha do tempo"],
+    "dinossauro": ["dinossaur", "jurassic"],
+    "robo": ["robo", "inteligencia artificial", "androide", "ciborgue", "maquinas"],
+    "tubarao": ["tubara"],
+    "natal": ["natal", "papai noel", "natalin", "renas"],
+    "futebol": ["futebol", "jogador de futebol", "copa do mundo", "craque", "time de futebol"],
+    "boxe": ["boxe", "boxead", "lutador", "luta", "ringue", "mma"],
+    "carros": ["corrida", "piloto", "carro", "racha", "formula 1"],
+    "escola": ["escola", "colegio", "estudante", "professor", "faculdade", "universidade"],
+    "racismo": ["racismo", "racista", "racial", "escravid", "escravo", "segregacao", "apartheid"],
+    "favela": ["favela", "morro", "comunidade", "periferia"],
+    "religiao": ["deus", "jesus", "igreja", "biblia", "fe ", "padre", "freira", "religios"],
+    "amor": ["apaixon", "romance", "amor", "casamento", "namor"],
+    "vinganca": ["vinga"],
+    "sobrevivencia": ["sobreviv", "naufrag", "ilha deserta", "perdido na selva"],
+    "apocalipse": ["apocalipse", "pos-apocalipt", "fim do mundo", "pandemia", "virus mortal"],
+    "terrorismo": ["terroris", "atentado", "bomba", "sequestr"],
+    "espionagem": ["espia", "espiao", "agente secreto", "cia", "kgb", "007"],
+    "hacker": ["hacker", "ciberat", "computador", "internet"],
+    "musica": ["musico", "banda", "cantor", "cantora", "rock", "rapper", "musical"],
+    "baseado em fatos reais": ["fatos reais", "historia real", "baseado em fatos", "historia verdadeira"],
+}
+# outras palavras que levam aos mesmos temas
+TOPIC_ALIASES = {"droga": "drogas", "trafico": "drogas", "traficante": "drogas", "cocaina": "drogas", "maconha": "drogas",
+                 "narcotrafico": "drogas", "vicio": "drogas", "mafioso": "mafia", "gangster": "mafia",
+                 "guerras": "guerra", "roubo": "assalto", "assaltos": "assalto", "cadeia": "prisao", "presidio": "prisao",
+                 "zumbis": "zumbi", "vampiros": "vampiro", "fantasmas": "fantasma", "terror sobrenatural": "fantasma",
+                 "espacial": "espaco", "et": "alienigena", "aliens": "alienigena", "alien": "alienigena",
+                 "dinossauros": "dinossauro", "robos": "robo", "ia": "robo", "tubaroes": "tubarao", "luta": "boxe",
+                 "corrida": "carros", "escravidao": "racismo", "fatos reais": "baseado em fatos reais",
+                 "historia real": "baseado em fatos reais", "espiao": "espionagem", "espioes": "espionagem",
+                 "romance": "amor", "pandemia": "apocalipse", "fim do mundo": "apocalipse"}
+
+
+def topic_terms(query):
+    """(nome do tema, palavras procuradas nas sinopses) para uma busca, ou (None, []) se curta demais."""
+    q = catalog_fold(query).strip()
+    q = TOPIC_ALIASES.get(q, q)
+    if q in TOPICS:
+        return q, TOPICS[q]
+    if len(q) < 4:
+        return None, []
+    stem = q[:-1] if q.endswith("s") and len(q) > 4 else q   # "piratas" acha "pirata"
+    return q, [stem]
+
+
 def find_account(channels):
     """(servidor, usuário, senha) da conta Xtream mais usada nos links da lista, ou None."""
     hosts = Counter()
@@ -106,6 +171,8 @@ class MetaService(QObject):
         self._actors = None           # índice de atores (montado quando pedem)
         self._actors_key = None
         self._actors_at = 0
+        self._texts = None            # sinopses sem acento, para a busca por assunto
+        self._texts_key = None
         try:
             self.movies = json.loads(MOVIES_FILE.read_text(encoding="utf8"))
         except (OSError, ValueError):
@@ -279,6 +346,34 @@ class MetaService(QObject):
                  if k.startswith(q) or f" {q}" in k]
         found.sort(key=lambda x: (-x[1], x[0]))
         return found[:limit]
+
+    def _topic_texts(self):
+        """[(id do filme ou None, série ou None, texto sem acento, nota)]: sinopse + gênero."""
+        key = (len(self.movies), len(self.series))
+        if self._texts is not None and key == self._texts_key:
+            return self._texts
+        with self._lock:
+            movies = list(self.movies.items())
+        out = [(sid, None, " " + catalog_fold(f"{i.get('genre') or ''} {i.get('plot') or ''}") + " ",
+                float(i.get("rating") or 0)) for sid, i in movies if i.get("plot")]
+        out += [(None, title, " " + catalog_fold(f"{i.get('genre') or ''} {i.get('plot') or ''}") + " ",
+                 float(i.get("rating") or 0)) for title, i in list(self.series.items()) if i.get("plot")]
+        self._texts, self._texts_key = out, key
+        return out
+
+    def topic_titles(self, query):
+        """(ids de filmes, séries) cuja sinopse fala do assunto, os que mais falam e com nota maior primeiro."""
+        _name, terms = topic_terms(query)
+        if not terms:
+            return [], []
+        rx = re.compile(r"(?<![a-z0-9])(?:" + "|".join(re.escape(t) for t in terms) + ")")
+        hits = []
+        for sid, title, text, rating in self._topic_texts():
+            n = len(rx.findall(text))
+            if n:
+                hits.append((-min(n, 4), -rating, sid, title))
+        hits.sort(key=lambda h: (h[0], h[1]))
+        return [h[2] for h in hits if h[2]], [h[3] for h in hits if h[3]]
 
     def actor_titles(self, name):
         """(ids de filmes, séries) com a pessoa no elenco."""

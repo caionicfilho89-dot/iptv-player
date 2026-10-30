@@ -413,6 +413,8 @@ class CardRow(QWidget):
     def _see_all(self):
         if getattr(self, "_actor", None):
             return self.page.open_actor(self._actor)
+        if getattr(self, "_topic", None):
+            return self.page.open_topic(self._topic)
         if self.see_all_path is not None:
             self.page.open_path(self.see_all_path)
 
@@ -1161,6 +1163,9 @@ class SearchView(QScrollArea):
         self.cast_row = CardRow(page, "")   # busca com o nome exato de alguém: os títulos da pessoa
         self.cast_row.page_bar = self.verticalScrollBar()
         lay.addWidget(self.cast_row)
+        self.topic_row = CardRow(page, "")  # filmes e séries cuja sinopse fala do assunto buscado
+        self.topic_row.page_bar = self.verticalScrollBar()
+        lay.addWidget(self.topic_row)
         self.rows = {}
         for key, label, wide in (("titles", "Séries e programas", False), ("movies", "Filmes", False),
                                  ("live", "Canais ao vivo", True), ("videos", "Vídeos", False)):
@@ -1192,6 +1197,14 @@ class SearchView(QScrollArea):
         self.cast_row.all_btn.setVisible(len(cast_items) > ROW_MAX)
         self.cast_row.see_all_path = None
         self.cast_row._actor = exact
+        topic = self.page.allowed(self.page.topic_entries(query))
+        self.topic_row.title.setText(f"Sobre “{query}”")
+        self.topic_row.set_items(topic, ctx="Assunto")
+        self.topic_row.count_text = len(topic)
+        self.topic_row.all_btn.setVisible(len(topic) > ROW_MAX)
+        self.topic_row.see_all_path = None
+        self.topic_row._topic = query
+        total += len(topic)
         self.empty.setVisible(total == 0)
         self.verticalScrollBar().setValue(0)
 
@@ -1220,8 +1233,19 @@ class ActorView(QWidget):
         self.grid.setProperty("ctx", "Elenco")
         lay.addWidget(self.grid, 1)
 
+    def show_topic(self, query):
+        self.name = ""
+        items = self.page.allowed(self.page.topic_entries(query, limit=None))
+        self.title.setText(f"Sobre “{query}”")
+        self.count.setText(f"   {len(items)} título{'s' if len(items) != 1 else ''} cuja sinopse fala disso")
+        self.note.hide()
+        self.grid.setProperty("ctx", "Assunto")
+        self.model.set_items(items)
+        self.grid.verticalScrollBar().setValue(0)
+
     def show_actor(self, name, keep_scroll=False):
         self.name = name
+        self.grid.setProperty("ctx", "Elenco")
         items = self.page.allowed(self.page.actor_entries(name))
         self.title.setText(name)
         self.count.setText(f"   {len(items)} título{'s' if len(items) != 1 else ''} na sua lista" if items else
@@ -1405,15 +1429,35 @@ class BrowsePage(QWidget):
             self.hero.show_slide(self.hero.index)
 
     def _on_cast_progress(self, _done, _total):
-        if self.stack.currentWidget() is self.actor:
+        if self.stack.currentWidget() is self.actor and self.actor.name:
             self.actor.show_actor(self.actor.name, keep_scroll=True)
 
     # --- elenco
     def actor_entries(self, name):
         """Filmes (um por título: sem repetir a versão legendada) e séries/programas com a pessoa no elenco."""
-        catalog = self.catalog
-        if catalog is None:
+        if self.catalog is None:
             return []
+        sids, series = self.meta.actor_titles(name)
+        movies, shows = self._title_entries(sids, series)
+        year = lambda e: cat.year_of(e.name) if not isinstance(e, CatalogNode) else \
+            int((self.meta.series_info(e.label) or {}).get("year") or 0)
+        return sorted(movies + shows, key=lambda e: -year(e))
+
+    def topic_entries(self, query, limit=ROW_MAX * 4):
+        """Filmes e séries cuja sinopse fala do assunto (busca "drogas", "viagem no tempo"…), os mais certeiros
+        primeiro; filmes e séries intercalados."""
+        if self.catalog is None or not self.meta.account:
+            return []
+        sids, series = self.meta.topic_titles(query)
+        movies, shows = self._title_entries(sids, series, keep_order=True)
+        out = []
+        for i in range(max(len(movies), len(shows))):
+            out += [x[i] for x in (movies, shows) if i < len(x)]
+        return out[:limit] if limit else out
+
+    def _title_entries(self, sids, series, keep_order=False):
+        """(filmes, séries) da lista para ids de filmes e nomes de séries da conta."""
+        catalog = self.catalog
         if self._by_sid is None and self.meta.account:
             self._by_sid, self._title_nodes = {}, {}
             for ch in catalog.channels:
@@ -1423,18 +1467,21 @@ class BrowsePage(QWidget):
                 if len(path) == 3 and cat.is_title_level(path[:2]):
                     self._title_nodes.setdefault(catalog_fold(node.label).strip(), node)
         by_sid, nodes = self._by_sid or {}, self._title_nodes or {}
-        sids, series = self.meta.actor_titles(name)
         movies, seen = [], set()
-        for ch in sorted((by_sid[s] for s in sids if s in by_sid),
-                         key=lambda c: (cat.badges(c) != [], c.name)):
-            key = (catalog_fold(display_title(ch.name)), cat.year_of(ch.name))
+        found = [by_sid[s] for s in sids if s in by_sid]
+        if not keep_order:
+            found.sort(key=lambda c: (cat.badges(c) != [], c.name))
+        for ch in found:
+            key = (catalog_fold(display_title(ch.name)), None if keep_order else cat.year_of(ch.name))
             if key not in seen:
                 seen.add(key)
                 movies.append(ch)
         shows = [nodes[t] for t in series if t in nodes]
-        year = lambda e: cat.year_of(e.name) if not isinstance(e, CatalogNode) else \
-            int((self.meta.series_info(e.label) or {}).get("year") or 0)
-        return sorted(movies + shows, key=lambda e: -year(e))
+        return movies, shows
+
+    def open_topic(self, query):
+        if query:
+            self._go(("topic", query))
 
     def open_actor(self, name):
         if name:
@@ -1813,6 +1860,9 @@ class BrowsePage(QWidget):
             self.stack.setCurrentWidget(self.results)
         elif kind == "actor":
             self.actor.show_actor(state[1])
+            self.stack.setCurrentWidget(self.actor)
+        elif kind == "topic":
+            self.actor.show_topic(state[1])
             self.stack.setCurrentWidget(self.actor)
         self.back_btn.setVisible(bool(self.history) and kind != "home")
 
