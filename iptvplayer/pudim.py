@@ -8,10 +8,12 @@
 import hashlib
 import json
 import os
+import threading
 import time
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
-from PyQt6.QtCore import QTimer
+import requests
+from PyQt6.QtCore import QTimer, pyqtSignal
 
 from .catalog import as_vod, catalog_fold, media_is_video
 from .log import log
@@ -28,6 +30,32 @@ _mw.STALL_TIMEOUT = 6        # canal ao vivo parado por mais que isso = travou (
 def retry_delay_ms(attempt):
     """1ª tentativa quase na hora; depois 2 s, 3,5 s… até 5 s entre uma e outra."""
     return min(5000, 500 + 1500 * (attempt - 1))
+
+
+EDGE_TRIES = 4              # servidores de vídeo testados antes de entregar o link original ao VLC
+EDGE_WAIT = 8               # segundos sem receber vídeo = servidor travado (os bons às vezes levam 4 s)
+
+
+def pick_edge(url):
+    """A conta manda cada pedido para um servidor de vídeo (302 com token). Alguns aceitam a conexão e nunca
+    mandam o vídeo (visto com VPN ligada): testa o servidor e, se travar, pede outro. None = nenhum respondeu."""
+    headers = {"User-Agent": "Mozilla/5.0"}
+    for attempt in range(1, EDGE_TRIES + 1):
+        loc = url
+        try:
+            with requests.get(url, headers=headers, allow_redirects=False, timeout=8) as r:
+                if not (r.is_redirect and r.headers.get("Location")):
+                    return url   # sem servidor de vídeo separado: o VLC abre direto
+                loc = urljoin(url, r.headers["Location"])
+            with requests.get(loc, headers=headers, stream=True, timeout=(4, EDGE_WAIT)) as v:
+                if v.ok and next(v.iter_content(8192), b""):
+                    return loc
+                problem = f"HTTP {v.status_code}"
+        except requests.RequestException as e:
+            problem = type(e).__name__
+        log.warning("Servidor de vídeo %s não mandou o vídeo (%s), tentativa %d", urlsplit(loc).netloc,
+                    problem, attempt)
+    return None
 
 
 def _recorded(item):
@@ -47,7 +75,11 @@ def _account_link(url):
 
 
 class PudimWindow(MainWindow):
+    _edge_found = pyqtSignal(int, object)   # (pedido, link do servidor de vídeo que respondeu ou None)
+
     def __init__(self, cfg=None):
+        self._edge_token = 0
+        self._edge_pending = None    # (pedido, link, opções) esperando o teste do servidor de vídeo
         self._bookmarks = {}
         try:
             self._bookmarks = json.loads(BOOKMARKS.read_text(encoding="utf8"))
@@ -61,6 +93,7 @@ class PudimWindow(MainWindow):
         self._live_pending = False   # canal esperando a próxima tentativa de reconexão
         self._live_retries = 0
         super().__init__(cfg)
+        self._edge_found.connect(self._on_edge_found)
 
     # --- marcadores
     def _write_bookmarks(self):
@@ -132,6 +165,7 @@ class PudimWindow(MainWindow):
         return super().play(ch, *args, **kwargs)
 
     def play_ondemand(self, item, url, info="", start=None, live=None, playlist=None):
+        self._edge_pending = None
         self._checkpoint(force=True)
         self._last_failed = None
         if _recorded(item):
@@ -191,7 +225,8 @@ class PudimWindow(MainWindow):
         self._recovery_token += 1
         token, stream = self._recovery_token, self.stream
         self._set_status(f"↻ Reconectando… (tentativa {self._live_retries})", "warn")
-        self.video.set_message(f"Reconectando “{ch.name}”…")
+        hint = "\nSe estiver usando VPN, desligue ou deixe o PudimFlix fora dela." if self._live_retries >= 3 else ""
+        self.video.set_message(f"Reconectando “{ch.name}”…{hint}")
 
         def reconnect():
             if token != self._recovery_token or self.current is not ch:
@@ -201,8 +236,8 @@ class PudimWindow(MainWindow):
         QTimer.singleShot(retry_delay_ms(self._live_retries), reconnect)
 
     def _monitor_tick(self):
-        if self._live_pending:
-            return   # esperando a próxima tentativa: não conta como nova falha
+        if self._live_pending or self._edge_pending:
+            return   # esperando a próxima tentativa ou o teste do servidor: não conta como nova falha
         super()._monitor_tick()
         if self.confirmed and self._live_retries and not self.vod:
             log.info("Reconectou depois de %d tentativa(s)", self._live_retries)
@@ -305,6 +340,7 @@ class PudimWindow(MainWindow):
         self._recovery_pending = False
         self._live_pending = False
         self._live_retries = 0
+        self._edge_pending = None
         return super().stop()
 
     def closeEvent(self, e):
@@ -325,11 +361,34 @@ class PudimWindow(MainWindow):
         return super()._set_media(url, opts)
 
     def _open_stream(self, stream):
+        self._edge_token += 1
+        self._edge_pending = None
         if not (self.current is not None and _account_link(self.current.url)):
             return super()._open_stream(stream)
+        if self._live_retries and not self.vod and str(stream[0]).startswith("http://"):
+            # caiu: testa o servidor de vídeo antes, senão o VLC cairia de novo no mesmo servidor travado
+            self.player.stop()
+            self.timeshift.park()
+            self._ts_sid = None
+            token = self._edge_token
+            self._edge_pending = (token, stream[0], stream[1])
+            threading.Thread(target=lambda: self._edge_found.emit(token, pick_edge(stream[0])),
+                             name="servidor-video", daemon=True).start()
+            return
         keep = self.cfg["timeshift"]
         self.cfg["timeshift"] = False
         try:
             return super()._open_stream(stream)
         finally:
             self.cfg["timeshift"] = keep
+
+    def _on_edge_found(self, token, url):
+        if not self._edge_pending or self._edge_pending[0] != token or self.current is None:
+            return   # trocou de canal ou parou enquanto testava
+        _, original, opts = self._edge_pending
+        self._edge_pending = None
+        if url is None:
+            log.warning("Nenhum servidor de vídeo mandou o vídeo de %s", self.current.name)
+        self.started_at = time.monotonic()   # o tempo do teste não conta como demora para abrir
+        self.last_progress = self.started_at
+        self._set_media(url or original, opts)
