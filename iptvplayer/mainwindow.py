@@ -50,6 +50,7 @@ from .recorder import Recorder, clip_path, snapshot_path
 from .offline import OfflineLibrary
 from .timeshift import LIVE_DELAY_OPT, START_WAIT_MS, Timeshift, supports as timeshift_supports
 from .remote import RemoteServer, qr_pixmap
+from .tvcast import TvCast
 from .updater import UpdateDownloader, can_self_update, run_installer, setup_asset
 from .theme import T, app_icon, app_icon_pixmap, apply_theme, build_style, icon
 from .vlcload import vlc
@@ -171,6 +172,8 @@ class MainWindow(QMainWindow):
                                       "--sub-source=marq"])
         self.player = self.instance.media_player_new()
         self.recorder = Recorder(self.instance)
+        self.tvcast = TvCast(self.cfg, self)    # "Mandar pra TV": o canal passa na TV Samsung pela rede de casa
+        self.tvcast.status.connect(self._on_tvcast_status)
         self._build_ui()
         self.overlay = FullscreenOverlay()
         self._wire_overlay()
@@ -527,7 +530,10 @@ class MainWindow(QMainWindow):
                                  self._more_menu, kind="", text="  Mais", icon_size=17)
         fs = top.itemAt(top.count() - 1).widget()  # tela cheia fica por último
         top.removeWidget(fs)
-        for b in (self.cc_btn, self.guide_btn, self.rec_btn):
+        self.tv_btn = make_btn("tv", "Mandar pra TV: o canal passa na TV Samsung pela rede de casa (Ctrl+Shift+T)",
+                               kind="tool", checkable=True, icon_size=18)
+        self.tv_btn.clicked.connect(self.toggle_tv)
+        for b in (self.cc_btn, self.tv_btn, self.guide_btn, self.rec_btn):
             top.addWidget(b)
         top.addSpacing(6)
         top.addWidget(self.more_btn)
@@ -647,6 +653,7 @@ class MainWindow(QMainWindow):
         a.setCheckable(True)
         a.setChecked(self.skip_cb.isChecked())
         m.addSeparator()
+        act(m, self.tv_btn, "Mandar pra TV   Ctrl+Shift+T", "tv")
         act(m, self.dub_btn, "Dublagem por IA   Ctrl+U", "dub")
         act(m, self.tracks_btn, "Áudio e legenda do canal", "tracks")
         act(m, self.snap_btn, "Tirar foto da tela   Ctrl+S", "camera")
@@ -884,6 +891,7 @@ class MainWindow(QMainWindow):
         sc("Ctrl+P", self.enter_pip)
         sc("Ctrl+L", self._toggle_view_mode)
         sc("Ctrl+T", self.cc_btn.toggle)
+        sc("Ctrl+Shift+T", self.tv_btn.click)
         sc("Ctrl+U", self.dub_btn.toggle)
         sc("Ctrl+Shift+A", self._next_audio_track)
         sc("Ctrl+Left", lambda: self.seek_relative(-30))
@@ -1445,6 +1453,12 @@ class MainWindow(QMainWindow):
             return self.open_series(ch)
         if ch.kind in ("movie", "episode"):
             return self.play_ondemand(ch, ch.url, start=self._resume_pos(ch.url))
+        if self.tvcast.active and not ch.kind:   # mandando pra TV: o canal escolhido vai para a TV
+            fix = self.cfg["alt_links"].get(ch.url)
+            url, opts = stream or ((fix["url"], fix["opts"]) if fix else (ch.url, ch.opts))
+            if not self.tvcast.start(ch, url, opts):
+                self._info(f"“{ch.name}” não está num formato que a TV abra.", 6)
+            return
         if (not force and self.current and ch.url == self.current.url
                 and time.monotonic() - self.started_at < 1.5):
             return  # clique duplo não reinicia o canal
@@ -3028,6 +3042,8 @@ class MainWindow(QMainWindow):
         self.cfg["last_full_scan"] = time.time()
         self.scan_progress.finish()
         self.cfg.save()
+        if not self.cfg["custom_sources"]:
+            self.refresh_home()   # as fileiras de canais abertos escondem os que o teste achou fora do ar
         if self.hide_dead_cb.isChecked():
             self._select_category(self.category, from_nav=None)
         else:
@@ -3224,12 +3240,35 @@ class MainWindow(QMainWindow):
             self.captions.set_active(True)
             self.subs_timer.start()
             self._place_subs()
+            if self._audio_route(True):
+                self._replay()
             self._caption_sound_notice()
         else:
             if self.captions and not self.dub_btn.isChecked():
                 self.captions.set_active(False)  # a IA continua carregada para religar na hora
             self.subs_timer.stop()
             self.subs.clear()
+            if not self.dub_btn.isChecked() and self._audio_route(False):
+                self._replay()
+
+    def _audio_route(self, on):
+        """Som tocado pelo programa: a IA ouve direto do player, então legenda e dublagem funcionam
+        até com o som no mudo ou sem caixa de som. Devolve True se mudou (o canal precisa recomeçar)."""
+        if on == self.audio.attached:
+            return False
+        self.player.stop()
+        if on:
+            self.audio.volume = self.vol.value() / 100
+            self.audio.muted = self.player.audio_get_mute() == 1
+            self.audio.duck_level = self.cfg["dub_duck"]
+            self.audio.ai_sink = lambda block: self.captions and self.captions.feed(block)
+            self.audio.attach(self.player)
+        else:
+            self.audio.detach()
+            self.player.audio_set_volume(self.vol.value())
+        if self.captions:
+            self.captions.use_tap(on)
+        return True
 
     # ================================================================ dublagem por IA
     def _toggle_dub(self, on):
@@ -3240,17 +3279,12 @@ class MainWindow(QMainWindow):
                 "Esta versão do IPTV Player não inclui a IA de legendas, que a dublagem usa.\n\n"
                 f"Para usar pelo código-fonte, instale:  pip install {' '.join(missing_deps())}")
             return
-        if on == self.audio.attached:
+        if on == (self.dubber is not None):
             return
         log.info("Dublagem %s", "ligada" if on else "desligada")
         # o som muda de caminho (VLC <-> programa): o canal recomeça para valer
-        self.player.stop()
+        moved = self._audio_route(on or self.cc_btn.isChecked())
         if on:
-            self.audio.volume = self.vol.value() / 100
-            self.audio.muted = False
-            self.audio.duck_level = self.cfg["dub_duck"]
-            self.audio.ai_sink = lambda block: self.captions and self.captions.feed(block)
-            self.audio.attach(self.player)
             self._new_dubber()
             if not self.captions:
                 self._start_caption_worker()
@@ -3263,12 +3297,10 @@ class MainWindow(QMainWindow):
             if self.dubber:
                 self.dubber.stop()
                 self.dubber = None
-            self.audio.detach()
             if self.captions:
-                self.captions.use_tap(False)
                 self.captions.set_active(self.cc_btn.isChecked())
-            self.player.audio_set_volume(self.vol.value())
-        self._replay()
+        if moved:
+            self._replay()
 
     def _new_dubber(self):
         self.dubber = Dubber(self.audio, self.cfg["dub_voice"], self)
@@ -3466,7 +3498,32 @@ class MainWindow(QMainWindow):
             self._reload_epg()
 
     # ================================================================ encerramento
+    def toggle_tv(self):
+        if not self.tv_btn.isChecked():
+            return self.tvcast.stop()
+        ch, stream = self.current, self.stream
+        if ch is None or self.vod or ch.kind:
+            self.tv_btn.setChecked(False)
+            return self._info("Abra um canal ao vivo e aperte de novo para mandar ele para a TV.", 6)
+        self.stop()   # a conta costuma permitir uma conexão só: quem baixa o canal agora é o envio para a TV
+        if not self.tvcast.start(ch, *stream):
+            self.tv_btn.setChecked(False)
+            self._info(f"“{ch.name}” não está num formato que a TV abra.", 6)
+
+    def _on_tvcast_status(self, text, color):
+        if not text:
+            self.tv_btn.setChecked(False)
+            self.video.set_message("")
+            return
+        self.tv_btn.setChecked(True)
+        if color == "bad":
+            self.tv_btn.setChecked(False)
+        self.video.set_message(text + ("\nEscolha outro canal para trocar na TV, ou aperte o botão da TV para parar."
+                                       if color == "ok" else ""))
+        self._info(text, 8)
+
     def closeEvent(self, e):
+        self.tvcast.stop()
         self.meta.save()
         self._save_resume()
         self.health.save(force=True)

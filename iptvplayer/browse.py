@@ -1691,9 +1691,15 @@ class BrowsePage(QWidget):
 
     def _logos_first(self, node):
         """Canais com logo e que costumam abrir sem travar primeiro."""
-        score = self.win.health.score
-        chans = [self.catalog.channels[i] for i in node.indices]
-        return sorted(chans, key=lambda c: (not c.logo, -(score(c.url) or 0.5)))[:ROW_MAX]
+        return self._best_live([self.catalog.channels[i] for i in node.indices])
+
+    def _best_live(self, chans, keep_order=False):
+        """Tira os canais que o teste automático achou fora do ar ou que vivem travando; os melhores primeiro."""
+        win, score = self.win, self.win.health.score
+        chans = [c for c in chans if win.status_of(c.url) != "dead" and win.health.level(c.url) != 1]
+        if not keep_order:
+            chans.sort(key=lambda c: (not c.logo, -(score(c.url) or 0.5)))
+        return chans if keep_order else chans[:ROW_MAX]
 
     def _live_rows(self, br):
         catalog, rows = self.catalog, []
@@ -1709,7 +1715,8 @@ class BrowsePage(QWidget):
         rank = {b: i for i, b in enumerate(ENGLISH_BRANDS)}
         english.sort(key=lambda c: rank.get(c.name.split()[0].lower(), len(rank)))
         brands = set()   # uma ABC, uma CBS…: o primeiro nome do canal é a marca
-        english = [c for c in english if not (c.name.split()[0].lower() in brands or brands.add(c.name.split()[0].lower()))]
+        english = [c for c in self._best_live(english, keep_order=True) if not (c.name.split()[0].lower() in brands
+                                                                       or brands.add(c.name.split()[0].lower()))]
         if english:
             rows.append(("Em inglês · ligue a legenda em português por IA (Ctrl+T)", english[:ROW_MAX], None, True))
         for n in catalog.ordered_children(world, "size")[:8]:

@@ -54,6 +54,7 @@ DEFAULTS = {
     "schedule": [],
     "resume": {},  # onde parou em filmes/episódios: {url: [segundos (-1 = assistido), duração, quando]}
     "region": "all",  # filtro de país da tela Início (themes.REGIONS)
+    "tv_ip": "", "tv_token": "",  # TV Samsung do "Mandar pra TV" (tvcast.py): último IP e a permissão dada na TV
     "sort_mode": "brasil",  # brasil (BR primeiro), list, stable (mais estáveis primeiro) ou name
     "stats": {},  # retrospectiva: {url: {"name","logo","secs","count","last"}}
     "tracks": {},  # áudio/legenda escolhidos por canal: {url: {"audio": nome, "spu": nome ou ""}}

@@ -200,3 +200,8 @@ class AudioEngine:
                     sp.play(np.clip(mix, -1.0, 1.0))
         except Exception:  # noqa: BLE001
             log.exception("Som: a saída de áudio parou")
+            # sem caixa de som (headset desligado): a IA continua ouvindo pelo player; só descarta o som
+            while not self._stop.is_set():
+                self._next_original(OUT_BLOCK)
+                self._next_speech(OUT_BLOCK)
+                self._stop.wait(OUT_BLOCK / RATE)

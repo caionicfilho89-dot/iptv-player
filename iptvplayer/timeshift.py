@@ -420,8 +420,9 @@ class Timeshift(QObject):
     failed = pyqtSignal(int)
     exported = pyqtSignal(str, str)  # arquivo salvo, mensagem de erro ("" = deu certo)
 
-    def __init__(self, max_minutes=60, instance=None, parent=None, conns=CONNS, keep_prev=False):
+    def __init__(self, max_minutes=60, instance=None, parent=None, conns=CONNS, keep_prev=False, host="127.0.0.1"):
         super().__init__(parent)
+        self.pages = {}              # páginas extras servidas junto (a da TV, em tvcast.py): caminho -> html
         self.max_seconds = max_minutes * 60
         self.instance = instance     # VLC usado para juntar vídeo + áudio ao salvar trechos
         self.conns = conns           # conexões simultâneas por canal
@@ -438,6 +439,8 @@ class Timeshift(QObject):
 
             def do_GET(self):
                 path, _, query = self.path.partition("?")
+                if path in owner.pages:
+                    return self._send(owner.pages[path].encode(), "text/html; charset=utf-8")
                 parts = path.strip("/").split("/")
                 s = next((x for x in (owner.session, owner.warm) if x and parts[0] == str(x.sid)), None)
                 if not s or len(parts) != 2:
@@ -457,17 +460,21 @@ class Timeshift(QObject):
                     if not f:
                         return self.send_error(404)
                     body, ctype = f.read_bytes(), "video/mp2t" if f.suffix == ".ts" else "video/mp4"
+                self._send(body, ctype)
+
+            def _send(self, body, ctype):
                 self.send_response(200)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-cache")
+                self.send_header("Access-Control-Allow-Origin", "*")   # o player da página da TV (hls.js)
                 self.end_headers()
                 try:
                     self.wfile.write(body)
                 except OSError:
                     pass
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server = ThreadingHTTPServer((host, 0), Handler)
         self.server.daemon_threads = True
         self.port = self.server.server_address[1]
         threading.Thread(target=self.server.serve_forever, name="timeshift-http", daemon=True).start()

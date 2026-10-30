@@ -32,6 +32,9 @@ def retry_delay_ms(attempt):
     return min(5000, 500 + 1500 * (attempt - 1))
 
 
+BUSY_MSG = ("Sua conta está sendo usada em outro aparelho (TV, celular…) e ela só permite uma conexão.\n"
+            "Feche o canal lá que este volta sozinho em seguida.")
+ACCOUNT_CONNECT_TIMEOUT = 8  # canal da conta que não começou em 8 s: o servidor de vídeo travou
 EDGE_TRIES = 4              # servidores de vídeo testados antes de entregar o link original ao VLC
 EDGE_WAIT = 8               # segundos sem receber vídeo = servidor travado (os bons às vezes levam 4 s)
 
@@ -58,6 +61,23 @@ def pick_edge(url):
     return None
 
 
+def account_in_use(url):
+    """Conexões da conta em uso agora (em uso, máximo), pela API Xtream do mesmo servidor; None se não der."""
+    parts = urlsplit(url)
+    pieces = [p for p in parts.path.split("/") if p]
+    if pieces and pieces[0] in ("live", "movie", "series"):
+        pieces = pieces[1:]
+    if len(pieces) != 3:
+        return None
+    try:
+        r = requests.get(f"{parts.scheme}://{parts.netloc}/player_api.php",
+                         params={"username": pieces[0], "password": pieces[1]}, timeout=8)
+        info = r.json().get("user_info") or {}
+        return int(info.get("active_cons") or 0), int(info.get("max_connections") or 0)
+    except (requests.RequestException, ValueError, TypeError, AttributeError):
+        return None
+
+
 def _recorded(item):
     return item is not None and media_is_video(item)
 
@@ -76,6 +96,7 @@ def _account_link(url):
 
 class PudimWindow(MainWindow):
     _edge_found = pyqtSignal(int, object)   # (pedido, link do servidor de vídeo que respondeu ou None)
+    _account_checked = pyqtSignal(int, object)   # (pedido, (em uso, máximo) ou None)
 
     def __init__(self, cfg=None):
         self._edge_token = 0
@@ -94,6 +115,8 @@ class PudimWindow(MainWindow):
         self._live_retries = 0
         super().__init__(cfg)
         self._edge_found.connect(self._on_edge_found)
+        self._account_checked.connect(self._on_account_checked)
+        self._account_busy = False   # a conta está sendo usada em outro aparelho
 
     # --- marcadores
     def _write_bookmarks(self):
@@ -225,8 +248,16 @@ class PudimWindow(MainWindow):
         self._recovery_token += 1
         token, stream = self._recovery_token, self.stream
         self._set_status(f"↻ Reconectando… (tentativa {self._live_retries})", "warn")
-        hint = "\nSe estiver usando VPN, desligue ou deixe o PudimFlix fora dela." if self._live_retries >= 3 else ""
-        self.video.set_message(f"Reconectando “{ch.name}”…{hint}")
+        if self._account_busy:
+            self._set_status("⛔ Conta em uso em outro aparelho — tentando de novo…", "bad")
+            self.video.set_message(BUSY_MSG)
+        else:
+            hint = "\nSe estiver usando VPN, desligue ou deixe o PudimFlix fora dela." if self._live_retries >= 3 else ""
+            self.video.set_message(f"Reconectando “{ch.name}”…{hint}")
+        if (self._live_retries in (2, 6) or self._live_retries % 10 == 0) and _account_link(ch.url):
+            # caiu mais de uma vez seguida: a única conexão da conta pode estar na TV ou no celular
+            threading.Thread(target=lambda: self._account_checked.emit(token, account_in_use(ch.url)),
+                             name="conta-em-uso", daemon=True).start()
 
         def reconnect():
             if token != self._recovery_token or self.current is not ch:
@@ -235,13 +266,30 @@ class PudimWindow(MainWindow):
             MainWindow.play(self, ch, auto=True, force=True, stream=stream)
         QTimer.singleShot(retry_delay_ms(self._live_retries), reconnect)
 
+    def _on_account_checked(self, token, cons):
+        if token != self._recovery_token or self.current is None or not cons:
+            return
+        used, most = cons
+        busy = most > 0 and used >= most
+        if busy != self._account_busy:
+            log.info("Conta: %d de %d conexões em uso%s", used, most, " (em outro aparelho)" if busy else "")
+        self._account_busy = busy
+        if busy:
+            self._set_status("⛔ Conta em uso em outro aparelho — tentando de novo…", "bad")
+            self.video.set_message(BUSY_MSG)
+
     def _monitor_tick(self):
         if self._live_pending or self._edge_pending:
             return   # esperando a próxima tentativa ou o teste do servidor: não conta como nova falha
+        if (self.current is not None and not self.vod and not self.confirmed
+                and _account_link(self.current.url)
+                and time.monotonic() - self.started_at > ACCOUNT_CONNECT_TIMEOUT):
+            return self._on_fail("não respondeu")   # servidor de vídeo travado: troca logo, sem esperar 15 s
         super()._monitor_tick()
         if self.confirmed and self._live_retries and not self.vod:
             log.info("Reconectou depois de %d tentativa(s)", self._live_retries)
             self._live_retries = 0
+            self._account_busy = False
 
     def _vod_failed(self, reason):
         if not self.vod or not _recorded(self.current):
