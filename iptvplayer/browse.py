@@ -22,6 +22,11 @@ from .sportsview import SportsView
 from .banner import TodayBanner
 
 ROW_MAX = 30          # cartões por fileira (o resto fica no "Ver tudo")
+ENGLISH_COUNTRIES = {"US", "GB", "UK", "CA", "AU", "IE", "NZ"}
+ENGLISH_THEMES = {"Notícias", "Documentários e natureza"}
+# marcas conhecidas vêm primeiro na fileira de canais em inglês
+ENGLISH_BRANDS = ["bloomberg", "cbs", "nbc", "abc", "sky", "bbc", "cnn", "fox", "reuters", "dw", "france", "euronews",
+                  "al", "cna", "nasa", "national", "pbs", "smithsonian", "discovery", "history", "newsmax", "newsy"]
 HERO_SLIDES = 6
 HERO_EVERY_MS = 9000
 
@@ -488,7 +493,7 @@ class Hero(QWidget):
     def show_slide(self, i):
         if not self.slides:
             self.kicker.setText("BEM-VINDO AO PUDIMFLIX")
-            self.title.setText("Carregando o catálogo…")
+            self.title.setText("Carregando o catálogo…" if self.page.catalog is None else "Escolha um canal abaixo")
             self.meta.setText("")
             self.play_btn.hide()
             self.more_btn.hide()
@@ -1666,6 +1671,8 @@ class BrowsePage(QWidget):
             if k < len(genres):
                 g = genres[k]
                 rows.append((f"Filmes · {g.label}", [catalog.channels[i] for i in g.indices[:ROW_MAX]], g.path, False))
+        if not movies and not series:   # só canais ao vivo (listas abertas): fileiras por tema
+            rows += self._live_rows(br)
         shows = catalog.node(cat.TV_SHOWS)
         if shows:
             rows.append(("Programas de TV", catalog.ordered_children(shows, "list")[:ROW_MAX], shows.path, False))
@@ -1681,6 +1688,33 @@ class BrowsePage(QWidget):
             if items:
                 out.append((title, items, see_all, wide))
         return out
+
+    def _logos_first(self, node):
+        """Canais com logo e que costumam abrir sem travar primeiro."""
+        score = self.win.health.score
+        chans = [self.catalog.channels[i] for i in node.indices]
+        return sorted(chans, key=lambda c: (not c.logo, -(score(c.url) or 0.5)))[:ROW_MAX]
+
+    def _live_rows(self, br):
+        catalog, rows = self.catalog, []
+        if br:
+            for n in catalog.ordered_children(br, "size")[:10]:
+                rows.append((f"Brasil · {n.label}", self._logos_first(n), n.path, True))
+        world = catalog.node((cat.LIVE, "Outros"))
+        if not world:
+            return rows
+        # canais em inglês de notícias e documentários: o lugar certo para ligar a legenda por IA
+        english = [catalog.channels[i] for n in world.children.values() if n.label in ENGLISH_THEMES
+                   for i in n.indices if catalog.channels[i].country in ENGLISH_COUNTRIES and catalog.channels[i].logo]
+        rank = {b: i for i, b in enumerate(ENGLISH_BRANDS)}
+        english.sort(key=lambda c: rank.get(c.name.split()[0].lower(), len(rank)))
+        brands = set()   # uma ABC, uma CBS…: o primeiro nome do canal é a marca
+        english = [c for c in english if not (c.name.split()[0].lower() in brands or brands.add(c.name.split()[0].lower()))]
+        if english:
+            rows.append(("Em inglês · ligue a legenda em português por IA (Ctrl+T)", english[:ROW_MAX], None, True))
+        for n in catalog.ordered_children(world, "size")[:8]:
+            rows.append((f"{n.label} · do mundo", self._logos_first(n), n.path, True))
+        return rows
 
     def _hero_slides(self, rows):
         slides = []
@@ -1698,6 +1732,10 @@ class BrowsePage(QWidget):
         for title, items, _see, _w in series_rows[:2]:
             if items:
                 slides.append((items[random.randrange(min(8, len(items)))], title.replace("Séries · ", "Série · ")))
+        if not slides:   # só canais ao vivo: destaca alguns canais com logo
+            live = [c for _t, items, _s, wide in rows if wide for c in items[:6] if c.logo]
+            random.shuffle(live)
+            slides = [(c, "Ao vivo agora") for c in live[:4]]
         return slides
 
     def refresh(self):

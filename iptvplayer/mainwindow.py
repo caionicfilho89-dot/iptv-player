@@ -692,7 +692,7 @@ class MainWindow(QMainWindow):
         """Itens de todas as listas do usuário (ou da categoria aberta, se não houver lista própria)."""
         custom = self.cfg["custom_sources"]
         if not custom:
-            return list(self.all_channels)
+            return self._open_channels()
         out = []
         for s in custom:
             key = src.custom_key(s)
@@ -706,6 +706,21 @@ class MainWindow(QMainWindow):
                 except OSError:
                     pass
         return out
+
+    def _open_channels(self):
+        """Sem lista própria: todas as listas abertas, sem repetir canal, agrupadas por país e tema
+        (o Início ganha fileiras como "Brasil · Esportes" e "Notícias do mundo")."""
+        files = [(k, p) for k, *_ in src.builtin_entries() if (p := src.file_for(k, []))]
+        if not files:
+            return list(self.all_channels)
+        out = []
+        for e in themes.build_library(files, self.health.score, themes.load_ai_cache()):
+            if media_is_video(e.ch) or re.search(r"\[xxx\]|\badultos?\b|18\+|xxx", f"{e.ch.group} {e.ch.name}", re.I):
+                continue   # vídeos soltos e conteúdo adulto não entram nas fileiras de TV ao vivo
+            label = themes.THEME_LABEL.get(e.theme, "Variedades")
+            group = f"Canais|{label}" if e.country == "BR" else label
+            out.append(replace(e.ch, group=group, country=e.country or e.ch.country))
+        return out or list(self.all_channels)
 
     def _rebuild_library(self):
         """Monta o catálogo numa tarefa (com 300 mil itens leva alguns segundos)."""
