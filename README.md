@@ -1,11 +1,13 @@
-# 🍮 PudimFlix
+# 🍮 Pudim
+
+*(antigo PudimFlix)*
 
 **O player de TV para Windows que legenda e dubla canais estrangeiros em português, ao vivo, com IA rodando no
 seu próprio PC.** Sem assinatura, sem mandar o áudio para a nuvem.
 
 ![Canal em inglês com legenda em português feita pela IA, ao vivo](docs/legenda-ia.gif)
 
-*Bloomberg Originals (canal aberto, em inglês) com a legenda em português gerada na hora pela IA do PudimFlix.*
+*Bloomberg Originals (canal aberto, em inglês) com a legenda em português gerada na hora pela IA do Pudim.*
 
 ### O que nenhum outro player de IPTV faz
 
@@ -21,7 +23,7 @@ Além disso: milhares de canais abertos que se atualizam sozinhos, guia de progr
 zapping automático e visual no estilo Netflix. Você também pode adicionar a sua própria lista (M3U ou login
 Xtream Codes). Feito em Python (PyQt6) com o VLC embutido.
 
-![Tela "Ao vivo" do PudimFlix](docs/ao-vivo.png)
+![Tela "Ao vivo" do Pudim](docs/ao-vivo.png)
 
 ## ⬇️ Download
 

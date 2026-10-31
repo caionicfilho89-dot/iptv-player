@@ -1,5 +1,5 @@
 """Temas (claro/escuro + cor de destaque), folha de estilo e ícones vetoriais."""
-from PyQt6.QtCore import QByteArray, QPointF, Qt
+from PyQt6.QtCore import QByteArray, QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPainterPath, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 
@@ -256,6 +256,7 @@ ICONS = {
     "forward": '<path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/><path d="M9.5 10.5H12v3H9.5M14 10.5v3"/>',
     "live": '<circle cx="12" cy="12" r="2.6" fill="CUR"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M5 5a10 10 0 0 0 0 14M19 5a10 10 0 0 1 0 14"/>',
     "phone": '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/>',
+    "mic": '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/>',
     "dub": '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/>',
     "cc": '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M10.6 10.3a2.4 2.4 0 1 0 0 3.4"/>'
           '<path d="M17.1 10.3a2.4 2.4 0 1 0 0 3.4"/>',
@@ -295,7 +296,7 @@ def icon(name, color="text", size=20):
 
 
 def app_icon_pixmap(size=256):
-    """Ícone do PudimFlix: um pudim com calda de caramelo num pratinho (desenhado numa grade de 64x64)."""
+    """Ícone do Pudim: um pudim com calda de caramelo num pratinho (desenhado numa grade de 64x64)."""
     pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
@@ -310,6 +311,19 @@ def app_icon_pixmap(size=256):
     plate.setColorAt(1, QColor("#c9d0de"))
     p.setBrush(plate)
     p.drawEllipse(QPointF(32, 53.5), 29, 6)
+    # bracinhos (atrás do corpo): o esquerdo acenando
+    arm = QColor("#eea23a")
+    p.setBrush(arm)
+    p.save()
+    p.translate(9.5, 37)
+    p.rotate(-35)
+    p.drawRoundedRect(QRectF(-2.6, -7, 5.2, 11), 2.6, 2.6)
+    p.restore()
+    p.save()
+    p.translate(54.5, 45)
+    p.rotate(25)
+    p.drawRoundedRect(QRectF(-2.6, -4, 5.2, 9), 2.6, 2.6)
+    p.restore()
     # corpo do pudim (tronco de cone)
     body = QPainterPath()
     body.moveTo(17, 20)
@@ -346,6 +360,34 @@ def app_icon_pixmap(size=256):
     p.drawEllipse(QPointF(26, 17.5), 5, 1.8)
     p.setBrush(QColor(255, 255, 255, 90))
     p.drawEllipse(QPointF(14.5, 42), 1.6, 5)
+    # carinha de monstrinho: olhões, bochechas e boca aberta com dois dentinhos
+    for x in (25, 39.5):
+        p.setBrush(QColor("#ffffff"))
+        p.drawEllipse(QPointF(x, 41.5), 4.3, 4.6)
+        p.setBrush(QColor("#2a1206"))
+        p.drawEllipse(QPointF(x + 0.6, 40.6), 2.4, 2.7)
+        p.setBrush(QColor("#ffffff"))
+        p.drawEllipse(QPointF(x + 1.5, 39.4), 0.9, 0.9)
+    p.setBrush(QColor(255, 110, 120, 120))
+    p.drawEllipse(QPointF(19, 47.2), 2.6, 1.5)
+    p.drawEllipse(QPointF(45.5, 47.2), 2.6, 1.5)
+    mouth = QPainterPath()
+    mouth.moveTo(27.5, 46.5)
+    mouth.cubicTo(29, 47.3, 35.5, 47.3, 37, 46.5)
+    mouth.cubicTo(36.5, 51.8, 28, 51.8, 27.5, 46.5)
+    p.fillPath(mouth, QColor("#5a1e08"))
+    tongue = QPainterPath()
+    tongue.moveTo(29.5, 50.2)
+    tongue.cubicTo(30.5, 48.4, 34, 48.4, 35, 50.2)
+    tongue.cubicTo(33.5, 51.2, 31, 51.2, 29.5, 50.2)
+    p.fillPath(tongue, QColor("#ff7a8a"))
+    for x in (29.6, 34.9):   # dentinhos de monstro
+        fang = QPainterPath()
+        fang.moveTo(x - 1.1, 46.9)
+        fang.lineTo(x + 1.1, 46.9)
+        fang.lineTo(x, 49.2)
+        fang.closeSubpath()
+        p.fillPath(fang, QColor("#ffffff"))
     p.end()
     return pm
 

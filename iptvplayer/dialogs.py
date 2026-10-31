@@ -235,7 +235,7 @@ class SettingsDialog(QDialog):
         self.daily_tip = QCheckBox("Dica do dia: avisar uma novidade que combina com o que eu assisto")
         self.daily_tip.setChecked(cfg["daily_tip"])
         lay.addWidget(self.daily_tip)
-        self.check_upd = QCheckBox("Avisar quando houver uma nova versão do PudimFlix")
+        self.check_upd = QCheckBox("Avisar quando houver uma nova versão do Pudim")
         self.check_upd.setChecked(cfg["check_updates"])
         lay.addWidget(self.check_upd)
         lay.addLayout(_row(make_btn("folder", "Arquivo com o que o programa fez e os erros que aconteceram — "
@@ -247,7 +247,7 @@ class SettingsDialog(QDialog):
         cancel = QPushButton("Cancelar")
         cancel.clicked.connect(self.reject)
         bottom = QHBoxLayout()
-        bottom.addWidget(QLabel(f"PudimFlix v{APP_VERSION}", objectName="muted"))
+        bottom.addWidget(QLabel(f"Pudim v{APP_VERSION}", objectName="muted"))
         bottom.addStretch(1)
         bottom.addWidget(cancel)
         bottom.addWidget(ok)

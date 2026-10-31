@@ -11,15 +11,15 @@
 
 [Setup]
 AppId={{6F4B3E2A-9C1D-4B7E-A2F0-3D5C8E9B1A77}
-AppName=PudimFlix
+AppName=Pudim
 AppVersion={#AppVersion}
-AppVerName=PudimFlix {#AppVersion}
+AppVerName=Pudim {#AppVersion}
 AppPublisher=caionicfilho89-dot
 AppPublisherURL=https://github.com/caionicfilho89-dot/iptv-player
 AppSupportURL=https://github.com/caionicfilho89-dot/iptv-player/issues
 AppUpdatesURL=https://github.com/caionicfilho89-dot/iptv-player/releases
 DefaultDirName={localappdata}\Programs\IPTV Player
-DefaultGroupName=PudimFlix
+DefaultGroupName=Pudim
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir={#OutDir}
@@ -50,14 +50,18 @@ Type: files; Name: "{userprograms}\IPTV Player\IPTV Player.lnk"
 Type: files; Name: "{userprograms}\IPTV Player\Desinstalar IPTV Player.lnk"
 Type: dirifempty; Name: "{userprograms}\IPTV Player"
 Type: files; Name: "{autodesktop}\IPTV Player.lnk"
+; atalhos do nome PudimFlix (o programa virou só Pudim na 1.21.0)
+Type: files; Name: "{group}\PudimFlix.lnk"
+Type: files; Name: "{group}\Desinstalar PudimFlix.lnk"
+Type: files; Name: "{autodesktop}\PudimFlix.lnk"
 
 [Icons]
-Name: "{group}\PudimFlix"; Filename: "{app}\IPTV Player.exe"
-Name: "{group}\Desinstalar PudimFlix"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\PudimFlix"; Filename: "{app}\IPTV Player.exe"; Tasks: desktopicon
+Name: "{group}\Pudim"; Filename: "{app}\IPTV Player.exe"
+Name: "{group}\Desinstalar Pudim"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\Pudim"; Filename: "{app}\IPTV Player.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\IPTV Player.exe"; Description: "Abrir o PudimFlix agora"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\IPTV Player.exe"; Description: "Abrir o Pudim agora"; Flags: nowait postinstall skipifsilent
 ; atualização com um clique (o app roda o instalador com /SILENT /RELAUNCH=1): reabre sozinho no fim
 Filename: "{app}\IPTV Player.exe"; Flags: nowait; Check: Relaunch
 

@@ -90,7 +90,7 @@ class NewsFeed(QObject):
         got = {}
         for key, url in FEEDS.items():
             try:
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 PudimFlix"})
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 Pudim"})
                 with urllib.request.urlopen(req, timeout=15) as r:
                     got[key] = parse_rss(r.read())
             except Exception as e:  # noqa: BLE001 — sem internet ou feed fora: fica o que já tinha

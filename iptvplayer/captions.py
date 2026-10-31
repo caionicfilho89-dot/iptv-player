@@ -328,6 +328,18 @@ class LLMTranslator:
             out = lines[-1]  # traduziu o contexto junto: a fala pedida é a última
         return out.replace("<<<", "").replace(">>>", "").strip().strip('"“”«»').strip()
 
+    def summarize(self, lines):
+        """Resumo curto ("O que eu perdi?") das falas dos últimos minutos de um canal."""
+        text = "\n".join(lines)[-5000:]
+        user = ("Estas são as falas dos últimos minutos de um canal de TV, vindas de reconhecimento automático de "
+                "voz (pode ter palavras erradas). Resuma em português do Brasil, em no máximo 3 frases curtas, o que "
+                "aconteceu ou do que estão falando. Responda só com o resumo.\n\n" + text)
+        prompt = f"<bos><start_of_turn>user\n{user}<end_of_turn>\n<start_of_turn>model\n"
+        tokens = self.tok.encode(prompt, add_special_tokens=False).tokens
+        res = self.gen.generate_batch([tokens], max_length=180, sampling_topk=1, include_prompt_in_result=False,
+                                      end_token=["<end_of_turn>", "<eos>"])
+        return self.tok.decode(res[0].sequences_ids[0], skip_special_tokens=True).strip()
+
 
 def nllb_ready():
     return (NLLB_DIR / "model.bin").exists() and (NLLB_DIR / "tokenizer.json").exists()

@@ -98,7 +98,7 @@ class MosaicWindow(QWidget):
 
     def __init__(self, instance, pool, size=2, volume=80):
         super().__init__()
-        self.setWindowTitle("PudimFlix — Mosaico")
+        self.setWindowTitle("Pudim — Mosaico")
         self.setWindowIcon(app_icon())
         self.instance = instance
         self.pool = pool

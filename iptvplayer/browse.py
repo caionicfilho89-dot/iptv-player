@@ -1,8 +1,9 @@
-"""Tela principal do PudimFlix: barra lateral com ícones, busca no topo, destaque com capa e fileiras de pôsteres.
+"""Tela principal do Pudim: barra lateral com ícones, busca no topo, destaque com capa e fileiras de pôsteres.
 
 Tudo vem do catálogo (catalog.py). A janela principal fornece o catálogo e toca o que for escolhido."""
 import html
 import random
+import re
 import time
 
 from PyQt6.QtCore import QAbstractListModel, QEvent, QModelIndex, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
@@ -22,6 +23,14 @@ from .sportsview import SportsView
 from .banner import TodayBanner
 
 ROW_MAX = 30          # cartões por fileira (o resto fica no "Ver tudo")
+QUALITY_RE = re.compile(r"\b(4k|uhd|fhd|hd|sd|leg|legendado|dublado|dual audio|\[l\])\b")
+
+
+def _same_title(name):
+    """Chave para não repetir o mesmo título em versões diferentes ("A Última Casa 4K" = "A Última Casa")."""
+    return re.sub(r"\s+", " ", QUALITY_RE.sub("", catalog_fold(display_title(name)))).strip()
+
+
 ENGLISH_COUNTRIES = {"US", "GB", "UK", "CA", "AU", "IE", "NZ"}
 ENGLISH_THEMES = {"Notícias", "Documentários e natureza"}
 # marcas conhecidas vêm primeiro na fileira de canais em inglês
@@ -494,7 +503,7 @@ class Hero(QWidget):
 
     def show_slide(self, i):
         if not self.slides:
-            self.kicker.setText("BEM-VINDO AO PUDIMFLIX")
+            self.kicker.setText("BEM-VINDO AO PUDIM")
             self.title.setText("Carregando o catálogo…" if self.page.catalog is None else "Escolha um canal abaixo")
             self.meta.setText("")
             self.play_btn.hide()
@@ -873,6 +882,9 @@ class SeriesView(QWidget):
         self.episodes.clicked.disconnect()
         self.episodes.clicked.connect(lambda idx: self._play_episode(idx.data(Qt.ItemDataRole.UserRole)))
         lay.addWidget(self.episodes, 1)
+        self.more_row = CardRow(page, "Mais como este")   # filmes e séries com a história parecida (semantic.py)
+        self.more_row.hide()
+        lay.addWidget(self.more_row)
 
     def _just_opened(self):
         return time.monotonic() - self._opened_at < QApplication.doubleClickInterval() / 1000 + 0.15
@@ -884,6 +896,7 @@ class SeriesView(QWidget):
         self.movie = None
         self.restart_btn.hide()
         self.episodes.show()
+        self.more_row.hide()
         first = page.catalog.first(node)
         provider = node.path[1] if node.path[0] == cat.SERIES else "Programa de TV"
         seasons = page.catalog.ordered_children(node, "name")
@@ -945,6 +958,9 @@ class SeriesView(QWidget):
             parts.append(left)
         self.meta.setText("   ·   ".join(p for p in parts if p))
         self._set_text(info, loading=not info)
+        more = page.allowed(page.similar_entries(info.get("plot", ""), exclude=ch))
+        self.more_row.set_items(more, ctx="Mais como este")
+        self.more_row.setVisible(bool(more))
         self._paint_poster()
         self.update()
 
@@ -1163,6 +1179,9 @@ class SearchView(QScrollArea):
         self.cast_row = CardRow(page, "")   # busca com o nome exato de alguém: os títulos da pessoa
         self.cast_row.page_bar = self.verticalScrollBar()
         lay.addWidget(self.cast_row)
+        self.sense_row = CardRow(page, "Pelo que você descreveu")   # busca pelo sentido da frase (semantic.py)
+        self.sense_row.page_bar = self.verticalScrollBar()
+        lay.addWidget(self.sense_row)
         self.topic_row = CardRow(page, "")  # filmes e séries cuja sinopse fala do assunto buscado
         self.topic_row.page_bar = self.verticalScrollBar()
         lay.addWidget(self.topic_row)
@@ -1197,6 +1216,10 @@ class SearchView(QScrollArea):
         self.cast_row.all_btn.setVisible(len(cast_items) > ROW_MAX)
         self.cast_row.see_all_path = None
         self.cast_row._actor = exact
+        sense = self.page.allowed(self.page.described_entries(query))
+        self.sense_row.set_items(sense, ctx="Pelo que você descreveu")
+        self.sense_row.setVisible(bool(sense))
+        total += len(sense)
         topic = self.page.allowed(self.page.topic_entries(query))
         self.topic_row.title.setText(f"Sobre “{query}”")
         self.topic_row.set_items(topic, ctx="Assunto")
@@ -1340,6 +1363,10 @@ class BrowsePage(QWidget):
         self._search_timer = QTimer(self, singleShot=True, interval=260, timeout=self._run_search)
         self.search.textChanged.connect(lambda: self._search_timer.start())
         bl.addWidget(self.search, 1)
+        self.mic_btn = make_btn("mic", "Falar com o Pudim (Ctrl+Espaço): \"coloca no SporTV\", \"jogo do "
+                                "Corinthians\", \"filme de terror dos anos 80\"…", self.win.voice_command,
+                                kind="tool", icon_size=18)
+        bl.addWidget(self.mic_btn)
         bl.addStretch(0)
         self.status = QLabel("", objectName="muted")
         bl.addWidget(self.status)
@@ -1454,6 +1481,38 @@ class BrowsePage(QWidget):
         for i in range(max(len(movies), len(shows))):
             out += [x[i] for x in (movies, shows) if i < len(x)]
         return out[:limit] if limit else out
+
+    def _pairs_entries(self, pairs, exclude=None, limit=ROW_MAX):
+        """[("m", id) / ("s", série)] na ordem dada -> cartões, um por título."""
+        self._title_entries((), ())   # monta os mapas id -> filme e nome -> série
+        by_sid, nodes = self._by_sid or {}, self._title_nodes or {}
+        skip = _same_title(exclude.name) if exclude is not None else None
+        out, seen = [], set()
+        for kind, ident in pairs:
+            e = by_sid.get(ident) if kind == "m" else nodes.get(ident)
+            if e is None:
+                continue
+            key = _same_title(e.label if isinstance(e, CatalogNode) else e.name)
+            if key in seen or key == skip:
+                continue
+            seen.add(key)
+            out.append(e)
+            if len(out) >= limit:
+                break
+        return out
+
+    def described_entries(self, query):
+        """Busca com uma descrição ("o cara que acorda sempre no mesmo dia"): pelo sentido das sinopses."""
+        sem = getattr(self.win, "semantic", None)
+        if self.catalog is None or not self.meta.account or sem is None or len(query.split()) < 3:
+            return []
+        return self._pairs_entries(sem.search(query, limit=ROW_MAX * 2))
+
+    def similar_entries(self, plot, exclude=None):
+        sem = getattr(self.win, "semantic", None)
+        if self.catalog is None or not self.meta.account or sem is None or not plot:
+            return []
+        return self._pairs_entries(sem.similar(plot, limit=ROW_MAX * 2), exclude=exclude)
 
     def _title_entries(self, sids, series, keep_order=False):
         """(filmes, séries) da lista para ids de filmes e nomes de séries da conta."""

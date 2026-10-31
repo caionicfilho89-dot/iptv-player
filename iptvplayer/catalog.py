@@ -1,4 +1,4 @@
-"""Catálogo do PudimFlix: organiza a lista em Ao vivo, Filmes, Séries, Programas… pelos grupos da própria lista.
+"""Catálogo do Pudim: organiza a lista em Ao vivo, Filmes, Séries, Programas… pelos grupos da própria lista.
 
 Determinístico (sem IA nem rede): cada item cai num caminho como ("Filmes", "Ação") ou
 ("Séries", "Netflix", "Round 6", "Temporada 01"). A soma de cada ramo bate com o total da lista."""

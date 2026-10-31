@@ -6,11 +6,14 @@ import re
 import threading
 import time
 import unicodedata
+from collections import deque
 from dataclasses import replace
+from html import escape as html_escape
 from pathlib import Path
 
 from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRect, QSize, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor, QCursor, QDesktopServices, QFont, QGuiApplication, QKeySequence, QPixmap, QShortcut
+from PyQt6.QtGui import (QColor, QCursor, QDesktopServices, QFont, QGuiApplication, QImage, QKeySequence, QPixmap,
+                         QShortcut)
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply
 from PyQt6.QtWidgets import (
     QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
@@ -48,8 +51,13 @@ from .net import BACKUP_FILE, ListDownloader, LogoLoader, Scanner, make_request
 from .pip import PipWindow
 from .recorder import Recorder, clip_path, snapshot_path
 from .offline import OfflineLibrary
+from .paths import CACHE
 from .timeshift import LIVE_DELAY_OPT, START_WAIT_MS, Timeshift, supports as timeshift_supports
 from .remote import RemoteServer, qr_pixmap
+from .semantic import SemanticIndex
+from .goals import GoalWatcher, describe as describe_game, same_team
+from .voice import VoiceControl, parse_command
+from .adbreak import LogoDetector
 from .tvcast import TvCast
 from .updater import UpdateDownloader, can_self_update, run_installer, setup_asset
 from .theme import T, app_icon, app_icon_pixmap, apply_theme, build_style, icon
@@ -88,6 +96,7 @@ def version_tuple(s):
 
 class MainWindow(QMainWindow):
     _library_built = pyqtSignal(object)  # biblioteca da tela Início montada numa tarefa
+    _missed_ready = pyqtSignal(str)      # resumo do "O que eu perdi?" pronto (feito numa tarefa)
 
     def __init__(self, cfg=None):
         super().__init__()
@@ -164,6 +173,21 @@ class MainWindow(QMainWindow):
         self.catalog = None          # tela Início: a lista organizada em Ao vivo, Filmes, Séries… (catalog.py)
         self.catalog_path = None     # pasta do catálogo que está na lista do player
         self.meta = MetaService(self)  # sinopse, nota e capas de filmes e séries (API da conta)
+        self.semantic = SemanticIndex(self)   # busca pelo sentido e "Mais como este"
+        self.heard_log = deque(maxlen=600)    # (hora, fala) do canal atual, para o "O que eu perdi?"
+        self.ads = LogoDetector()             # "Pular intervalo": percebe o comercial pela marca do canal
+        self._ad_muted = False
+        self._ad_timer = QTimer(self, interval=2000, timeout=self._ad_tick)
+        self._memory = False                  # a IA ouvindo em silêncio (sem legenda na tela) para resumir depois
+        self.voice = VoiceControl(self)       # controle por voz (Ctrl+Espaço)
+        self.voice.status.connect(self._on_voice_status)
+        self.voice.heard.connect(self._on_voice)
+        self._missed_ready.connect(self._show_missed)
+        self.goals = GoalWatcher(self)        # placar ao vivo: alerta de gol e placar no "Jogos de hoje"
+        self.goals.goal.connect(self._on_goal)
+        self.goals.scores.connect(lambda _s: self.home.banner.refresh() if hasattr(self, "home") else None)
+        if self.cfg["goal_alerts"]:
+            self.goals.start()
         self._lib_building = False
         self._library_built.connect(self._on_library_built)
         self._guide_known = {}       # url -> o canal tem programação no guia (sobe nas fileiras)
@@ -522,8 +546,12 @@ class MainWindow(QMainWindow):
         self.sleep_btn = make_btn("timer", "Timer para desligar", self._sleep_menu, kind="tool", icon_size=18)
         self.stats_btn = make_btn("trophy", "Retrospectiva: seus canais mais vistos e conquistas (Ctrl+Shift+H)",
                                   self.open_stats, kind="tool", icon_size=18)
+        self.adskip_btn = make_btn("next", "Pular intervalo: tira o som no comercial e devolve quando o programa "
+                                   "volta (pela marca do canal no canto da tela)", kind="tool", checkable=True,
+                                   icon_size=18)
+        self.adskip_btn.toggled.connect(self._toggle_adskip)
         for b in (self.dub_btn, self.tracks_btn, self.snap_btn, self.pip_btn, self.mosaic_btn, self.sleep_btn,
-                  self.stats_btn):
+                  self.stats_btn, self.adskip_btn):
             auto.addWidget(b)
         self._tools_box.hide()
         self.more_btn = make_btn("settings", "Mais: zapping, explorar, dublagem, foto, mosaico, timer…",
@@ -654,6 +682,8 @@ class MainWindow(QMainWindow):
         a.setChecked(self.skip_cb.isChecked())
         m.addSeparator()
         act(m, self.tv_btn, "Mandar pra TV   Ctrl+Shift+T", "tv")
+        m.addAction(icon("guide", "text", 16), "O que eu perdi?   Ctrl+Shift+R", self.what_did_i_miss)
+        act(m, self.adskip_btn, "Pular intervalo (sem som no comercial)", "next")
         act(m, self.dub_btn, "Dublagem por IA   Ctrl+U", "dub")
         act(m, self.tracks_btn, "Áudio e legenda do canal", "tracks")
         act(m, self.snap_btn, "Tirar foto da tela   Ctrl+S", "camera")
@@ -757,6 +787,9 @@ class MainWindow(QMainWindow):
         self.home.set_catalog(self.catalog)
         if catalog is not None:
             QTimer.singleShot(20000, self._daily_tip)
+            # depois de abrir tudo: calcula (só as novas) as sinopses para a busca pelo sentido
+            QTimer.singleShot(90000, lambda: self.meta.account and self.meta.movies and
+                              self.semantic.build(self.meta.movies, self.meta.series))
         if self._lib_dirty:
             QTimer.singleShot(0, self._rebuild_library)
 
@@ -837,7 +870,7 @@ class MainWindow(QMainWindow):
         return sorted(out, key=lambda r: -r[3])
 
     def _paint_brand(self):
-        self.home.brand.setText(f"Pudim<span style='color:{T['accent']}'>Flix</span>")
+        self.home.brand.setText(f"<span style='color:{T['accent']}'>Pudim</span>")
         self.home.brand_icon.setPixmap(app_icon_pixmap(64).scaled(
             38, 38, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         if self._compact:
@@ -892,6 +925,8 @@ class MainWindow(QMainWindow):
         sc("Ctrl+L", self._toggle_view_mode)
         sc("Ctrl+T", self.cc_btn.toggle)
         sc("Ctrl+Shift+T", self.tv_btn.click)
+        sc("Ctrl+Space", self.voice_command)
+        sc("Ctrl+Shift+R", self.what_did_i_miss)
         sc("Ctrl+U", self.dub_btn.toggle)
         sc("Ctrl+Shift+A", self._next_audio_track)
         sc("Ctrl+Left", lambda: self.seek_relative(-30))
@@ -1468,6 +1503,8 @@ class MainWindow(QMainWindow):
         if not auto:
             self.fail_streak = 0
         if self.current and self.current.url != ch.url:
+            self.heard_log.clear()        # o "O que eu perdi?" é sobre o canal atual
+            self._ad_reset()              # a marca do canal novo é outra
             self._record_watch()          # soma o tempo do canal que estava tocando
             self._prev_ch = self.current  # para o botão "voltar ao último canal"
         self.vod = None
@@ -2317,7 +2354,7 @@ class MainWindow(QMainWindow):
             if rem <= 60 and not self._sleep_warned:
                 self._sleep_warned = True
                 self._show_marquee("Desligando em 1 minuto…", timeout=6000)
-                self._info("O timer vai fechar o PudimFlix em 1 minuto.")
+                self._info("O timer vai fechar o Pudim em 1 minuto.")
         if self.recorder.active:
             if self.recorder.failed():
                 self.rec_btn.setChecked(False)
@@ -2618,6 +2655,46 @@ class MainWindow(QMainWindow):
         self.show_player()
         self.play(ch)
 
+    def live_score(self, game):
+        """(gols casa, gols fora, relógio) do jogo rolando agora, pelo placar ao vivo; None se não achar."""
+        for (home, away), score in self.goals.live.items():
+            if same_team(game.home, home) and same_team(game.away, away):
+                return score
+            if same_team(game.home, away) and same_team(game.away, home):
+                return score[1], score[0], score[2]
+        return None
+
+    def _on_goal(self, e):
+        if not self.cfg["goal_alerts"]:
+            return
+        found = None
+        for g, chs in self.sport_games():
+            if (same_team(g.home, e["home"]) and same_team(g.away, e["away"])) or \
+                    (same_team(g.home, e["away"]) and same_team(g.away, e["home"])):
+                found = (g, chs)
+                break
+        if found is None and self.cfg["sports_mine"]:
+            return   # jogo que não passa nos seus canais
+        g, chs = found if found else (None, [])
+        if self.cfg["sports_mine"] and not chs:
+            return
+        team = e["home"] if e["scorer_home"] else e["away"]
+        score = f"{e['home']} {e['hs']} x {e['as']} {e['away']}"
+        who = " ".join(x for x in (e["scorer"], e["minute"]) if x)
+        where = f" — {chs[0].name}: clique para ver o lance" if chs else ""
+        self._notify(f"⚽ GOL! {score}", (who + " · " if who else "") + (e["league"] or "") + where,
+                     action=(lambda: self.watch_goal(g, chs)) if chs else None)
+        self._info(f"⚽ <b>GOL do {html_escape(team)}!</b> {html_escape(score)}" + (f" ({html_escape(who)})" if who else ""), 20)
+        if self.cfg["sports_voice"]:
+            self.announcer.say(f"Gol do {team}! {e['home']} {e['hs']}, {e['away']} {e['as']}.")
+
+    def watch_goal(self, game, channels):
+        """Do aviso de gol: já no canal, volta 30 s (com o buffer); senão abre o canal do jogo."""
+        if self.current and any(c.url == self.current.url for c in channels):
+            self.show_player()
+            return self.seek_relative(-30)
+        self.watch_game(game, channels)
+
     def game_alert_on(self, game):
         return game.key in self.cfg["sports_alerts"]
 
@@ -2811,7 +2888,7 @@ class MainWindow(QMainWindow):
         set_btn_icon(self.sleep_btn, "timer")
         self.sleep_lbl.setText("")
         if deadline:
-            self._info(f"O PudimFlix vai fechar às {hm(deadline)}.")
+            self._info(f"O Pudim vai fechar às {hm(deadline)}.")
 
     # ================================================================ número do canal
     def eventFilter(self, obj, e):
@@ -3225,7 +3302,7 @@ class MainWindow(QMainWindow):
             self.cc_btn.setChecked(False)
             QMessageBox.information(
                 self, "Legendas traduzidas",
-                "Esta versão do PudimFlix não inclui a IA de legendas.\n\n"
+                "Esta versão do Pudim não inclui a IA de legendas.\n\n"
                 f"Para usar pelo código-fonte, instale:  pip install {' '.join(missing_deps())}")
             return
         for b in (self.cc_btn, self.overlay.cc_btn):
@@ -3244,11 +3321,11 @@ class MainWindow(QMainWindow):
                 self._replay()
             self._caption_sound_notice()
         else:
-            if self.captions and not self.dub_btn.isChecked():
+            if self.captions and not self.dub_btn.isChecked() and not self._memory:
                 self.captions.set_active(False)  # a IA continua carregada para religar na hora
             self.subs_timer.stop()
             self.subs.clear()
-            if not self.dub_btn.isChecked() and self._audio_route(False):
+            if not self.dub_btn.isChecked() and not self._memory and self._audio_route(False):
                 self._replay()
 
     def _audio_route(self, on):
@@ -3328,6 +3405,7 @@ class MainWindow(QMainWindow):
                 w.wait(4000)
 
     def _on_caption(self, original, translated, lang, replace):
+        self.heard_log.append((time.time(), translated or original))
         if self.cc_btn.isChecked():
             self.subs.add(translated or original, original, replace)
         if self.dubber and translated:
@@ -3432,7 +3510,7 @@ class MainWindow(QMainWindow):
         tag = self.cfg["latest_version"]
         mb = self.cfg["update_size"] / 1e6
         if QMessageBox.question(
-                self, "Atualizar o PudimFlix",
+                self, "Atualizar o Pudim",
                 f"Baixar e instalar a versão {tag} agora ({mb:.0f} MB)?\n\n"
                 "Quando o download terminar, o programa fecha, instala a versão nova "
                 "e abre de novo sozinho. Seus favoritos e configurações continuam.") \
@@ -3498,6 +3576,177 @@ class MainWindow(QMainWindow):
             self._reload_epg()
 
     # ================================================================ encerramento
+    # ================================================================ controle por voz
+    def voice_command(self):
+        self.voice.listen()
+
+    def _on_voice_status(self, text):
+        if hasattr(self, "home"):
+            self.home.status.setText(text)
+            self.home.mic_btn.setProperty("icon_color", "accent" if text.startswith("🎙") else "text")
+            set_btn_icon(self.home.mic_btn, "mic", "accent" if text.startswith("🎙") else "text")
+        if text:
+            self._info(text, 8)
+
+    def _on_voice(self, text):
+        action, arg = parse_command(text) if text else (None, None)
+        if action is None:
+            return
+        self._info(f"🎙️ “{html_escape(text)}”", 6)
+        if action == "seek":
+            self.seek_relative(arg)
+        elif action == "pause":
+            self.toggle_pause()
+        elif action == "stop":
+            self.stop()
+        elif action == "mute":
+            self.toggle_mute()
+        elif action == "volume":
+            self.vol.setValue(max(0, min(100, self.vol.value() + arg)))
+        elif action == "captions":
+            self.cc_btn.setChecked(arg)
+        elif action == "dub":
+            self.dub_btn.setChecked(arg)
+        elif action == "tv":
+            if not self.tv_btn.isChecked():
+                self.tv_btn.click()
+        elif action == "home":
+            self.go_home()
+        elif action == "missed":
+            self.what_did_i_miss()
+        elif action == "game":
+            for g, chs in self.sport_games():
+                if same_team(g.home, arg) or same_team(g.away, arg):
+                    return self.watch_game(g, chs)
+            self._info(f"Não achei jogo do {html_escape(arg)} hoje no guia.", 8)
+        elif action == "channel":
+            ch = self._find_channel(arg)
+            if ch is None:
+                return self._voice_search(arg)
+            if self.catalog and ch.url in self.catalog.by_url:
+                return self.play_catalog(ch, self.catalog.path_of(ch))
+            self.show_player()
+            self.play(ch)
+        elif action == "search":
+            self._voice_search(arg)
+
+    # ================================================================ pular intervalo
+    def _toggle_adskip(self, on):
+        self._ad_reset()
+        if on:
+            self._ad_timer.start()
+            self._info("📺 Pular intervalo ligado: aprendendo a marca deste canal (1 minuto)…", 10)
+        else:
+            self._ad_timer.stop()
+
+    def _ad_reset(self):
+        self.ads.reset()
+        if self._ad_muted:
+            self._ad_set_mute(False)
+
+    def _ad_set_mute(self, on):
+        self._ad_muted = on
+        if self.audio.attached:
+            self.audio.muted = on
+        else:
+            self.player.audio_set_mute(on)
+
+    def _ad_tick(self):
+        if self.current is None or self.vod or not self.confirmed or self.player.get_state() != vlc.State.Playing:
+            return
+        shot = CACHE / "quadro.png"
+        if shot.exists():   # a foto anterior (o VLC grava em segundo plano)
+            img = QImage(str(shot)).convertToFormat(QImage.Format.Format_Grayscale8)
+            if not img.isNull():
+                import numpy as np
+                ptr = img.constBits()
+                ptr.setsize(img.sizeInBytes())
+                gray = np.frombuffer(ptr, np.uint8).reshape(img.height(), img.bytesPerLine())[:, :img.width()]
+                was_learning = self.ads.learning
+                ev = self.ads.feed(gray.copy())
+                if was_learning and self.ads.failed:
+                    self._info("📺 Não achei a marca deste canal no canto da tela: o pular intervalo não funciona "
+                               "nele.", 10)
+                elif was_learning and not self.ads.learning:
+                    self._info("📺 Pular intervalo pronto: achei a marca do canal.", 6)
+                if ev == "start":
+                    log.info("Intervalo começou em %s", self.current.name)
+                    self._ad_set_mute(True)
+                    self._show_marquee("📺 Intervalo — tirei o som, volto quando o programa voltar", 22, 5, 8000)
+                elif ev == "end":
+                    log.info("Intervalo acabou em %s", self.current.name)
+                    self._ad_set_mute(False)
+                    self._show_marquee("▶ Voltou!", 26, 5, 3000)
+        self.player.video_take_snapshot(0, str(shot), 320, 0)
+
+    # ================================================================ "O que eu perdi?"
+    def what_did_i_miss(self):
+        ch, now = self.current, time.time()
+        if ch is None:
+            return self._info("Abra um canal e pergunte de novo.", 6)
+        for g, chs in self.sport_games():   # jogo rolando neste canal: o placar ao vivo conta tudo
+            if g.start - 900 <= now < g.stop + 1800 and any(c.url == ch.url for c in chs):
+                e = self.goals.find(g.home, g.away)
+                if e:
+                    return self._show_missed(describe_game(e))
+        lines = [t for when, t in self.heard_log if when > now - 15 * 60]
+        if len(lines) >= 3:
+            self._info("🧠 Resumindo o que passou…", 10)
+            threading.Thread(target=self._summarize, args=(lines,), name="resumo", daemon=True).start()
+            return
+        if not self._memory:   # ainda não ouviu nada: começa a prestar atenção (sem legenda na tela)
+            self._memory = True
+            if not self.captions:
+                self._start_caption_worker()
+            self.captions.set_active(True)
+            if self._audio_route(True):
+                self._replay()
+        self._info("🧠 Comecei a prestar atenção neste canal. Pergunte de novo daqui a alguns minutos "
+                   "(Ctrl+Shift+R) que eu conto o que passou.", 12)
+
+    def _summarize(self, lines):
+        text = ""
+        try:
+            from .captions import LLMTranslator, gpu_available, llm_ready
+            llm = getattr(self.captions, "_llm", None) if self.captions else None
+            if llm is None and llm_ready() and gpu_available():
+                llm = self._summary_llm = getattr(self, "_summary_llm", None) or LLMTranslator()
+            if llm is not None:
+                text = llm.summarize(lines)
+        except Exception:  # noqa: BLE001
+            log.exception("Resumo do que passou")
+        if not text:   # sem a IA da placa de vídeo: as últimas falas
+            text = "Últimas falas:\n" + "\n".join(f"• {t}" for t in lines[-5:])
+        self._missed_ready.emit(text)
+
+    def _show_missed(self, text):
+        log.info("O que eu perdi: %s", text.replace("\n", " | "))
+        self._show_marquee(text, size=24, position=5, timeout=20000)
+        self._info("🧠 " + html_escape(text).replace("\n", "<br>"), 20)
+
+    def _voice_search(self, query):
+        self.go_home()
+        self.home.search.setText(query)
+        self.home._run_search()
+
+    def _find_channel(self, name):
+        """Canal ao vivo com o nome falado ("sportv", "espn 4", "globo"): nome exato, depois o que começa assim."""
+        q = sports.fold(name).replace(" ", "")
+        if not q or self.catalog is None:
+            return None
+        best = None
+        for ch in self.catalog.channels:
+            if ch.kind or media_is_video(ch) or self.status_of(ch.url) == "dead":
+                continue
+            n = sports.fold(ch.name).replace(" ", "")
+            n = re.sub(r"(fhd|hd|sd|4k|h265|\[.*?\]|\(.*?\))", "", n)
+            rank = 0 if n == q else 1 if n.startswith(q) else 2 if q in n else None
+            if rank is not None and (best is None or (rank, len(n)) < best[0]):
+                best = ((rank, len(n)), ch)
+                if rank == 0:
+                    break
+        return best[1] if best else None
+
     def toggle_tv(self):
         if not self.tv_btn.isChecked():
             return self.tvcast.stop()

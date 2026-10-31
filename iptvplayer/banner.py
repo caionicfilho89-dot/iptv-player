@@ -207,7 +207,10 @@ class TodayBanner(QFrame):
         today.sort(key=lambda gc: (not gc[1], gc[0].start > now, gc[0].start))
         rows = []
         for g, chs in today[:LINES * 3]:
-            if g.start <= now < g.stop:
+            live = win.live_score(g) if g.start <= now < g.stop + 1800 else None
+            if live:   # placar ao vivo (goals.py)
+                badge, color = f"● {live[0]}x{live[1]}", T["bad"]
+            elif g.start <= now < g.stop:
                 badge, color = "● AGORA", T["bad"]
             elif label == "amanhã":
                 badge, color = time.strftime("%H:%M", time.localtime(g.start)), T["muted"]
@@ -216,7 +219,7 @@ class TodayBanner(QFrame):
                 badge = f"em {max(1, mins)}m" if mins < 60 else time.strftime("%H:%M", time.localtime(g.start))
                 color = T["accent"] if mins < 60 else T["text"]
             where = chs[0].name if chs else "fora das suas listas"
-            sub = " · ".join(x for x in (g.competition or g.sport_name, where) if x)
+            sub = " · ".join(x for x in ((live[2] if live else ""), g.competition or g.sport_name, where) if x)
             rows.append({"badge": badge, "badge_color": color, "text": f"{g.emoji} {g.teams}", "sub": sub,
                          "tip": f"{g.teams}\n{g.competition or g.sport_name}\n" +
                                 (", ".join(c.name for c in chs[:4]) if chs else "Canal fora das suas listas") +

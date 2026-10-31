@@ -3,7 +3,7 @@
 O canal é baixado em HLS pelo buffer do timeshift (agora aberto para a rede de casa) e a TV abre uma página
 com um player. A conta continua usando uma conexão só: a do PC. Links de conta Xtream em .ts viram o mesmo
 canal em .m3u8 (o servidor entrega os dois formatos). A TV é achada na rede pela API dela (porta 8001) e
-controlada pelo websocket do controle remoto (porta 8002): na primeira vez ela pede para permitir o PudimFlix."""
+controlada pelo websocket do controle remoto (porta 8002): na primeira vez ela pede para permitir o Pudim."""
 import base64
 import json
 import socket
@@ -19,10 +19,10 @@ from .log import log
 from .timeshift import Timeshift
 
 BROWSER_ID = "3201907018784"     # app "Internet" das TVs Samsung (Tizen)
-APP_NAME = base64.b64encode(b"PudimFlix").decode()
+APP_NAME = base64.b64encode(b"Pudim").decode()
 BUFFER_MINUTES = 5
 
-PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>PudimFlix</title>
+PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Pudim</title>
 <style>html,body{margin:0;height:100%;background:#000;overflow:hidden}
 video{width:100%;height:100%;object-fit:contain;background:#000}
 #t{position:fixed;top:28px;left:36px;color:#fff;font:600 34px sans-serif;text-shadow:0 2px 8px #000;
@@ -114,7 +114,7 @@ class TvRemote:
         url = f"wss://{ip}:8002/api/v2/channels/samsung.remote.control?name={APP_NAME}"
         if token:
             url += f"&token={token}"
-        # na primeira vez a TV mostra "Permitir PudimFlix?": dá tempo para a pessoa aceitar
+        # na primeira vez a TV mostra "Permitir Pudim?": dá tempo para a pessoa aceitar
         self.ws = websocket.create_connection(url, sslopt={"cert_reqs": ssl.CERT_NONE}, timeout=40)
         msg = json.loads(self.ws.recv())
         if msg.get("event") != "ms.channel.connect":

@@ -1,4 +1,4 @@
-"""Ajustes do PudimFlix para listas de conta (Xtream) com filmes e séries.
+"""Ajustes do Pudim para listas de conta (Xtream) com filmes e séries.
 
 - filmes e episódios guardam a posição a cada 5 s (por nome, vale mesmo se o link mudar) e continuam de onde pararam;
 - travou ou caiu: reconecta na hora, quantas vezes for preciso — o filme volta do ponto onde parou e o canal
@@ -252,7 +252,7 @@ class PudimWindow(MainWindow):
             self._set_status("⛔ Conta em uso em outro aparelho — tentando de novo…", "bad")
             self.video.set_message(BUSY_MSG)
         else:
-            hint = "\nSe estiver usando VPN, desligue ou deixe o PudimFlix fora dela." if self._live_retries >= 3 else ""
+            hint = "\nSe estiver usando VPN, desligue ou deixe o Pudim fora dela." if self._live_retries >= 3 else ""
             self.video.set_message(f"Reconectando “{ch.name}”…{hint}")
         if (self._live_retries in (2, 6) or self._live_retries % 10 == 0) and _account_link(ch.url):
             # caiu mais de uma vez seguida: a única conexão da conta pode estar na TV ou no celular

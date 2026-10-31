@@ -18,12 +18,12 @@ VSVersionInfo(
           "041604b0",
           [
             StringStruct("CompanyName", "caionicfilho89-dot"),
-            StringStruct("FileDescription", "PudimFlix"),
+            StringStruct("FileDescription", "Pudim"),
             StringStruct("FileVersion", "__VER_STR__"),
             StringStruct("InternalName", "IPTV Player"),
             StringStruct("LegalCopyright", "MIT License - github.com/caionicfilho89-dot/iptv-player"),
             StringStruct("OriginalFilename", "IPTV Player.exe"),
-            StringStruct("ProductName", "PudimFlix"),
+            StringStruct("ProductName", "Pudim"),
             StringStruct("ProductVersion", "__VER_STR__"),
           ],
         )

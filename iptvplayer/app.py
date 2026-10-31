@@ -41,7 +41,7 @@ def main():
     app.setStyleSheet(build_style())
     if vlc is None:
         log.error("VLC não encontrado")
-        QMessageBox.critical(None, "PudimFlix", VLC_MISSING_MSG)
+        QMessageBox.critical(None, "Pudim", VLC_MISSING_MSG)
         sys.exit(1)
     from .pudim import PudimWindow
     w = PudimWindow(cfg)
