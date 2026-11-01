@@ -110,8 +110,8 @@ class SemanticIndex(QObject):
                     titles.setdefault(k, []).append((kind, ident))
             keys, vecs = [], None
             try:
-                data = np.load(INDEX_FILE)
-                keys, vecs = list(data["keys"]), data["vecs"].astype("float32")
+                with np.load(INDEX_FILE) as data:   # fecha o arquivo: senão o Windows não deixa salvar por cima
+                    keys, vecs = list(data["keys"]), data["vecs"].astype("float32")
             except (OSError, ValueError, KeyError):
                 pass
             have = set(keys)
