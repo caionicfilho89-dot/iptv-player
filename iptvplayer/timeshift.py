@@ -423,6 +423,7 @@ class Timeshift(QObject):
     def __init__(self, max_minutes=60, instance=None, parent=None, conns=CONNS, keep_prev=False, host="127.0.0.1"):
         super().__init__(parent)
         self.pages = {}              # páginas extras servidas junto (a da TV, em tvcast.py): caminho -> html
+        self.page_seen = {}          # caminho -> hora em que alguém pediu a página (a TV abriu mesmo?)
         self.max_seconds = max_minutes * 60
         self.instance = instance     # VLC usado para juntar vídeo + áudio ao salvar trechos
         self.conns = conns           # conexões simultâneas por canal
@@ -440,6 +441,7 @@ class Timeshift(QObject):
             def do_GET(self):
                 path, _, query = self.path.partition("?")
                 if path in owner.pages:
+                    owner.page_seen[path] = time.time()
                     return self._send(owner.pages[path].encode(), "text/html; charset=utf-8")
                 parts = path.strip("/").split("/")
                 s = next((x for x in (owner.session, owner.warm) if x and parts[0] == str(x.sid)), None)

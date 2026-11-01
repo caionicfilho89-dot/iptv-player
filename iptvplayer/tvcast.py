@@ -35,7 +35,12 @@ function ask(cb) {   /* canal escolhido no PC */
   x.onload = function () { try { cb(JSON.parse(x.responseText)); } catch (e) {} };
   x.open("GET", "/tv.json?" + Date.now()); x.send();
 }
-function start() {
+function start(d) {
+  if (d.vod) {   /* filme ou episódio: o arquivo direto do servidor, continuando de onde estava no PC */
+    v.src = src;
+    v.addEventListener("loadedmetadata", function () { if (d.t) v.currentTime = d.t; }, {once: true});
+    v.play(); return;
+  }
   if (v.canPlayType("application/vnd.apple.mpegurl")) { v.src = src; v.play(); return; }
   var s = document.createElement("script");   /* TV sem HLS nativo: player em JavaScript */
   s.src = "https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js";
@@ -50,7 +55,7 @@ v.onerror = function () { setTimeout(function () { location.reload(); }, 3000); 
 ask(function (d) {
   src = d.src;
   document.getElementById("t").innerHTML = "&#127854; " + d.name;
-  start();
+  start(d);
   setTimeout(function () { document.getElementById("t").style.opacity = 0; }, 6000);
 });
 setInterval(function () { ask(function (d) { if (src && d.src !== src) location.reload(); }); }, 3000);
@@ -116,7 +121,10 @@ class TvRemote:
             url += f"&token={token}"
         # na primeira vez a TV mostra "Permitir Pudim?": dá tempo para a pessoa aceitar
         self.ws = websocket.create_connection(url, sslopt={"cert_reqs": ssl.CERT_NONE}, timeout=40)
-        msg = json.loads(self.ws.recv())
+        for _ in range(8):   # antes da resposta algumas TVs mandam avisos (ms.remote.touchDisable…)
+            msg = json.loads(self.ws.recv())
+            if msg.get("event") in ("ms.channel.connect", "ms.channel.unauthorized", "ms.channel.timeOut"):
+                break
         if msg.get("event") != "ms.channel.connect":
             raise OSError("a TV não permitiu o controle (" + str(msg.get("event")) + ")")
         self.token = (msg.get("data") or {}).get("token") or token
@@ -157,16 +165,38 @@ class TvCast(QObject):
     def active(self):
         return self.channel is not None
 
+    def _server(self):
+        if self.ts is None:
+            self.ts = Timeshift(max_minutes=BUFFER_MINUTES, parent=self, conns=1, host="0.0.0.0")
+            self.ts.ready.connect(self._on_ready)
+            self.ts.failed.connect(self._on_failed)
+        return self.ts
+
+    def start_vod(self, item, url, position=0):
+        """Filme ou episódio: a TV toca o arquivo direto do servidor, a partir de position (segundos)."""
+        if not url.startswith(("http://", "https://")):
+            return False
+        ts = self._server()
+        ts.close_all()
+        self.channel, self.sid = item, None
+        name = item.name.replace("<", "").replace("&", "e")
+        ts.pages["/tv.html"] = PAGE
+        ts.pages["/tv.json"] = json.dumps({"src": url, "name": name, "vod": True, "t": int(position)})
+        log.info("TV: mandando o filme %s (a partir de %d s)", item.name, position)
+        if self.page_open:
+            self.status.emit(f"📺 Passando na TV: {item.name}", "ok")
+            return True
+        self.status.emit(f"📺 Abrindo “{item.name}” na TV…", "warn")
+        threading.Thread(target=self._open_on_tv, args=(f":{ts.port}/tv.html", item.name), name="tv-abrir",
+                         daemon=True).start()
+        return True
+
     def start(self, ch, url, opts):
         """Começa a mandar o canal; False se o formato do canal não dá para a TV."""
         src = hls_url(url)
         if not src:
             return False
-        if self.ts is None:
-            self.ts = Timeshift(max_minutes=BUFFER_MINUTES, parent=self, conns=1, host="0.0.0.0")
-            self.ts.ready.connect(self._on_ready)
-            self.ts.failed.connect(self._on_failed)
-        self.ts.close_all()
+        self._server().close_all()
         self.channel = ch
         ua = [o for o in opts if str(o).startswith(":http-")] or [":http-user-agent=Mozilla/5.0"]
         self.sid = self.ts.open(src, ua)
@@ -246,13 +276,28 @@ class TvCast(QObject):
             if remote.token and remote.token != self.cfg["tv_token"]:
                 self.cfg["tv_token"] = remote.token
                 self.cfg.save()
-            # barra de endereço: sobe até ela, abre, digita e confirma
-            remote.key("KEY_UP", "KEY_UP", "KEY_UP", "KEY_ENTER")
-            time.sleep(2)
-            remote.text(url)
-            time.sleep(1)
-            remote.key("KEY_ENTER")
+            page = url[url.index("/", url.index(":")):]
+            asked = time.time()
+            for attempt in (1, 2):
+                # barra de endereço: sobe até ela, abre, digita e confirma
+                remote.key("KEY_UP", "KEY_UP", "KEY_UP", "KEY_ENTER")
+                time.sleep(2)
+                remote.text(url)
+                time.sleep(1)
+                remote.key("KEY_ENTER")
+                for _ in range(40):   # a TV pediu a página ao PC? (o navegador dela é lento)
+                    if self.ts.page_seen.get(page, 0) >= asked:
+                        break
+                    time.sleep(0.5)
+                else:
+                    log.warning("TV: o navegador não abriu a página (tentativa %d)", attempt)
+                    remote.key("KEY_RETURN", "KEY_RETURN")   # fecha o teclado/menu que tiver ficado aberto
+                    continue
+                break
             remote.close()
+            if self.ts.page_seen.get(page, 0) < asked:
+                raise OSError("o navegador da TV não abriu a página do Pudim. Confira se a TV e o PC estão na "
+                              "mesma rede e se o firewall do Windows deixa o Pudim receber conexões")
             log.info("TV: %s aberto no navegador da TV (%s)", name, ip)
             self._tv_done.emit(f"📺 Passando na TV: {name}", "ok")
         except Exception as e:  # noqa: BLE001

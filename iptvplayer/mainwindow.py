@@ -1548,6 +1548,10 @@ class MainWindow(QMainWindow):
         """Toca algo com começo e fim: filme, episódio ou programa que já passou (catch-up).
         item: o que aparece como tocando (item.url é a chave para continuar de onde parou);
         live: canal ao vivo do botão "ao vivo"; playlist: próximos episódios [(item, info)]."""
+        if self.tvcast.active:   # mandando pra TV: o filme/episódio escolhido vai para a TV
+            if not self.tvcast.start_vod(item, url, start or 0):
+                self._info("Esse vídeo não dá para mandar para a TV.", 6)
+            return
         log.info("Tocando sob demanda: %s — %s", item.name, xtream.redact(url))
         if self.current and self.session_status.get(self.current.url) == "loading":
             self.session_status.pop(self.current.url)
@@ -3751,9 +3755,16 @@ class MainWindow(QMainWindow):
         if not self.tv_btn.isChecked():
             return self.tvcast.stop()
         ch, stream = self.current, self.stream
-        if ch is None or self.vod or ch.kind:
+        if ch is not None and self.vod:   # filme/episódio: a TV continua do mesmo ponto
+            url, pos = self.vod["url"], max(0, self.player.get_time() // 1000)
+            self.stop()
+            if not self.tvcast.start_vod(ch, url, pos):
+                self.tv_btn.setChecked(False)
+                self._info("Esse vídeo não dá para mandar para a TV.", 6)
+            return
+        if ch is None or ch.kind:
             self.tv_btn.setChecked(False)
-            return self._info("Abra um canal ao vivo e aperte de novo para mandar ele para a TV.", 6)
+            return self._info("Abra um canal, filme ou episódio e aperte de novo para mandar para a TV.", 6)
         self.stop()   # a conta costuma permitir uma conexão só: quem baixa o canal agora é o envio para a TV
         if not self.tvcast.start(ch, *stream):
             self.tv_btn.setChecked(False)
