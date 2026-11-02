@@ -193,9 +193,9 @@ class Relay:
             if r is not None:
                 src["size"] = int(r.headers.get("Content-Range", "/0").split("/")[-1] or 0)
                 r.close()
-            if self.cfg is not None and self.cfg["night_audio"]:
+            if self.cfg is not None and self.cfg.get("night_audio_tv") and self.cfg.get("night_audio"):
                 ff = shutil.which("ffmpeg")
-                if ff:   # modo madrugada: transcodifica o áudio; sonda a duração pro seek aproximado
+                if ff:   # modo madrugada na TV (experimental): transcodifica o áudio; sonda a duração pro seek
                     src["ff"] = ff
                     src["dur"] = self._probe_duration(src["edge"], headers)
                     log.info("TV: modo madrugada ligado — transcodificando o áudio (ffmpeg)")

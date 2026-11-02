@@ -60,6 +60,7 @@ DEFAULTS = {
     "sleep_after_tv": False,  # quando o filme mandado pra TV acaba: apaga a tela e o PC dorme
     "goal_alerts": True,  # avisa quando sai gol nos jogos que passam nos seus canais (goals.py)
     "night_audio": False,  # modo madrugada: comprime o áudio (diálogos nítidos, sem estouros)
+    "night_audio_tv": False,  # modo madrugada TAMBÉM na TV (transcodifica o áudio no relay) — experimental, desligado
     "tv_ip": "", "tv_token": "", "tv_dmr": "",  # "Mandar pra TV" (tvcast.py): endereço de controle do player da TV
     "sort_mode": "brasil",  # brasil (BR primeiro), list, stable (mais estáveis primeiro) ou name
     "stats": {},  # retrospectiva: {url: {"name","logo","secs","count","last"}}
