@@ -14,6 +14,8 @@ seu próprio PC.** Sem assinatura, sem mandar o áudio para a nuvem.
 | | |
 |---|---|
 | 💬 **Legenda em português de qualquer canal** | A IA ouve o canal (Whisper), traduz (Gemma 3) e mostra a legenda em poucos segundos. Inglês, espanhol, francês e outros idiomas. Mais rápido com placa NVIDIA; também roda só no processador. |
+| 🍮 **Pudinho, o assistente** 🆕 | Um chat com IA rodando no seu PC: indica filmes e séries do *seu* catálogo ("um suspense pra ver com a namorada", "algo parecido com Breaking Bad"), acha o título pela história, explica o app, conta dos jogos do dia e obedece comandos ("abre o SporTV"). `Ctrl+J`. |
+| 📺 **Mandar pra TV** 🆕 | O canal, filme ou episódio passa na Smart TV pelo player dela, e você continua controlando pelo PC: pausar, voltar, avançar e volume. |
 | 🗣️ **Dublagem ao vivo** | A tradução vira voz em português, com o som original mais baixo por baixo, sincronizada com o vídeo. |
 | ⏸️ **Pausar e voltar a TV ao vivo** | O app guarda os últimos minutos do canal: pause, volte para ver o lance de novo e salve "o que acabou de passar". |
 | 📱 **Controle pelo celular** | Aponte a câmera para o QR code e use o celular como controle remoto, sem instalar nada. |
