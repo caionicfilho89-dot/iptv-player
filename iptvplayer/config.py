@@ -48,14 +48,18 @@ DEFAULTS = {
     # times favoritos ([] = todos), jogos marcados com "Avisar" e os já anunciados ({chave: início})
     "sports_auto": True, "sports_lead": 10, "sports_voice": True, "sports_mine": True, "sports_replays": False,
     "sports_kinds": [], "sports_teams": [], "sports_alerts": {}, "sports_announced": {},
+    "sports_teams_only": False,  # na tela de Jogos, mostrar só os jogos dos seus times (sports_teams)
     # dicas pelo seu gosto: aviso diário com uma novidade, dia da última dica e títulos já indicados
     "daily_tip": True, "tip_day": "", "tips_shown": [],
     "dl_dir": "", "dl_upload": False,   # assistir sem internet: pasta dos baixados ("" = Vídeos\PudimFlix Downloads)
     "schedule": [],
     "resume": {},  # onde parou em filmes/episódios: {url: [segundos (-1 = assistido), duração, quando]}
+    "ratings": {},  # joinha do filme: {url: 1 (gostei) ou -1 (não gostei)} — ajusta as recomendações
+    "intros": {},   # abertura aprendida por série: {chave da série: segundos até o fim da abertura}
     "region": "all",  # filtro de país da tela Início (themes.REGIONS)
     "sleep_after_tv": False,  # quando o filme mandado pra TV acaba: apaga a tela e o PC dorme
     "goal_alerts": True,  # avisa quando sai gol nos jogos que passam nos seus canais (goals.py)
+    "night_audio": False,  # modo madrugada: comprime o áudio (diálogos nítidos, sem estouros)
     "tv_ip": "", "tv_token": "", "tv_dmr": "",  # "Mandar pra TV" (tvcast.py): endereço de controle do player da TV
     "sort_mode": "brasil",  # brasil (BR primeiro), list, stable (mais estáveis primeiro) ou name
     "stats": {},  # retrospectiva: {url: {"name","logo","secs","count","last"}}

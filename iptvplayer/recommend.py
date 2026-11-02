@@ -60,6 +60,7 @@ class Recommender:
         self._key = None
         self._rows = []
         self._reasons = {}
+        self._profile = Counter()
         self._cands, self._cands_key, self._idf = [], None, {}
 
     # ---- o que você já viu
@@ -221,18 +222,22 @@ class Recommender:
         win = self.win
         if win.catalog is None:
             return []
+        ratings = win.cfg.get("ratings", {})
         key = (id(win.catalog), len(win.cfg["resume"]), len(win.cfg["favorites"]), len(win.meta.movies),
-               max((p[2] for p in win.cfg["resume"].values() if len(p) > 2), default=0) // 3600)
+               max((p[2] for p in win.cfg["resume"].values() if len(p) > 2), default=0) // 3600,
+               len(ratings), sum(ratings.values()))
         if key == self._key:
             return self._rows
+        top10 = self._top_today()                 # destaques do catálogo (não dependem do seu histórico)
         watched, seen = self._watched()
         if not watched:
-            self._key, self._rows = key, []
-            return []
+            self._key, self._rows = key, ([("Top 10 de hoje", top10)] if top10 else [])
+            return self._rows
         profile = Counter()
         for e, weight, _when in watched:
             for k, w in features(self._info(e), self._path(e)).items():
                 profile[k] += w * weight
+        self._apply_ratings(ratings, profile, seen)   # 👍 reforça o gosto, 👎 tira das recomendações
         why = self._reason(profile)
         rows = []
         # novidades primeiro (lançamentos deste ano e do anterior); os recomendados mostram outros títulos
@@ -254,8 +259,58 @@ class Recommender:
                 break
         if news:
             rows.insert(1 if best else 0, ("Novidades para você", news))
+        if top10:
+            rows.insert(0, ("Top 10 de hoje", top10))
+        gems = self._hidden_gems(seen, skip=best[:10] + news[:10])   # nota alta e pouco óbvias
+        if len(gems) >= 6:
+            rows.append(("Joias escondidas", gems))
+        self._profile = profile          # guardado para explicar "por que indiquei"
         self._key, self._rows = key, rows
         return rows
+
+    def _top_today(self):
+        """Top 10 do catálogo: melhores notas, com um empurrão para os mais recentes; com variedade de gênero."""
+        self._prepare()
+        year_now = time.localtime().tm_year
+        scored = []
+        for e, _eid, feats, year, rating in self._cands:
+            if rating <= 0:
+                continue
+            bonus = 1.5 if year >= year_now - 1 else (0.6 if year >= year_now - 3 else 0.0)
+            scored.append((rating + bonus, e, feats))
+        scored.sort(key=lambda r: -r[0])
+        return self._pick(scored, lambda _f: "Em alta", limit=10)
+
+    def _hidden_gems(self, seen, skip=()):
+        """Filmes/séries bem avaliados (nota ≥ 7.5) e mais antigos (fogem do que está em alta), ainda não vistos."""
+        self._prepare()
+        year_now = time.localtime().tm_year
+        pool = [(rating, e, feats) for e, eid, feats, year, rating in self._cands
+                if eid not in seen and rating >= 7.5 and (year == 0 or year <= year_now - 4)]
+        pool.sort(key=lambda r: -r[0])
+        return self._pick(pool, lambda _f: "Nota alta, pouco conhecido", skip=skip)
+
+    def top_genres(self, n=4):
+        """Os gêneros que a pessoa mais assiste (nomes para mostrar)."""
+        watched, _ = self._watched()
+        prof = Counter()
+        for e, w, _when in watched:
+            for g in _genres(self._info(e).get("genre")):
+                prof[g] += w
+        return [GENRE_NAMES.get(g, g) for g, _c in prof.most_common(n) if g]
+
+    def _apply_ratings(self, ratings, profile, seen):
+        """👍 (valor 1) reforça os traços do título no seu gosto; 👎 (-1) tira peso e nunca recomenda."""
+        catalog = self.win.catalog
+        for url, val in ratings.items():
+            i = catalog.by_url.get(url)
+            if i is None:
+                continue
+            e = self._title_of(catalog.channels[i])
+            feats = features(self._info(e), self._path(e))
+            for k, w in feats.items():
+                profile[k] = (profile.get(k, 0) + w * 1.5) if val > 0 else max(0.0, profile.get(k, 0) - w * 1.2)
+            seen.add(self._id(e))   # 👍 já visto (não repete); 👎 fica de fora das recomendações
 
     def reason(self, e):
         return self._reasons.get(self._id(e), "")

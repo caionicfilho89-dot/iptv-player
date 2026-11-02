@@ -41,7 +41,7 @@ from .epg import EpgManager
 from .epggrid import EpgGridDialog
 from .health import Health
 from .browse import BrowsePage
-from .catalog import ContentCatalog, as_vod, media_is_video
+from .catalog import ContentCatalog, as_vod, catalog_fold, display_title, media_is_video, series_parts
 from . import themes
 from .log import log
 from .metadata import MetaService
@@ -86,6 +86,10 @@ COMPACT_BELOW = 1080         # largura da janela abaixo da qual a barra lateral 
 LABEL_ROLE = Qt.ItemDataRole.UserRole + 1
 THEME_PREFIX = "tema:"       # categorias montadas pela tela Início (um tema com canais de todas as listas)
 BRASIL_ROW = THEME_PREFIX + "brasil"
+# modo madrugada: compressor de dinâmica do VLC — levanta os diálogos baixos e segura os estouros
+NIGHT_AUDIO_OPTS = (":audio-filter=compressor", ":compressor-threshold=-24", ":compressor-ratio=4.0",
+                    ":compressor-makeup-gain=8.0", ":compressor-attack=25.0", ":compressor-release=250.0",
+                    ":compressor-knee=2.0")
 
 
 def fold(text):
@@ -549,7 +553,8 @@ class MainWindow(QMainWindow):
         self.zap_lbl = QLabel("", objectName="muted")
         self.zap_lbl.setMinimumWidth(30)
         self.info_lbl = QLabel("", objectName="muted")
-        self.info_lbl.setOpenExternalLinks(True)
+        self.info_lbl.setOpenExternalLinks(False)   # os links são ações internas (joinha, pular abertura)
+        self.info_lbl.linkActivated.connect(self._info_link)
         self.info_lbl.setTextFormat(Qt.TextFormat.RichText)
         self.info_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.info_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -721,6 +726,10 @@ class MainWindow(QMainWindow):
         a.setCheckable(True)
         a.setChecked(self.cfg["sleep_after_tv"])
         a.toggled.connect(self._toggle_sleep_after_tv)
+        a = m.addAction(icon("moon", "text", 16), "Modo madrugada (áudio sem estouros)")
+        a.setCheckable(True)
+        a.setChecked(self.cfg["night_audio"])
+        a.toggled.connect(self._toggle_night_audio)
         m.addAction(icon("guide", "text", 16), "O que eu perdi?   Ctrl+Shift+R", self.what_did_i_miss)
         act(m, self.adskip_btn, "Pular intervalo (sem som no comercial)", "next")
         act(m, self.dub_btn, "Dublagem por IA   Ctrl+U", "dub")
@@ -1520,6 +1529,62 @@ class MainWindow(QMainWindow):
         self.info_lbl.setText(html)
         QTimer.singleShot(seconds * 1000, lambda: self.info_lbl.text() == html and self.info_lbl.setText(""))
 
+    def _info_link(self, href):
+        """Cliques nos links da barra de informação (ações internas, não abrem o navegador)."""
+        if href == "rate:like":
+            self._set_rating(1)
+        elif href == "rate:dislike":
+            self._set_rating(-1)
+        elif href == "skipintro":
+            self._skip_intro()
+
+    # ---- joinha depois do filme (👍/👎): ajusta as recomendações (recommend.py)
+    def _ask_rating(self, item):
+        if item is None or item.kind != "movie" or item.url in self.cfg["ratings"]:
+            return
+        self._rate_url = item.url
+        name = html_escape(display_title(item.name))
+        a = (f"<a href='{{h}}' style='color:{T['accent']};text-decoration:none;font-weight:700'>{{t}}</a>")
+        self._info(f"Gostou de “{name}”?&nbsp;&nbsp;{a.format(h='rate:like', t='👍 Gostei')}"
+                   f"&nbsp;&nbsp;{a.format(h='rate:dislike', t='👎 Não curti')}", 20)
+
+    def _set_rating(self, value):
+        url = getattr(self, "_rate_url", "")
+        if not url:
+            return
+        self.cfg["ratings"][url] = value
+        self.cfg.save()
+        self._info("Valeu! Vou usar isso pra te indicar melhor. 🍮" if value > 0
+                   else "Anotado! Não indico mais nada parecido com esse. 🍮", 5)
+
+    # ---- pular abertura de série (aprende quando você pula; depois oferece o botão)
+    def _series_key(self, item):
+        if item is None or item.kind != "episode" or not item.name:
+            return None
+        return catalog_fold(series_parts(item.name)[0]).strip() or None
+
+    def _offer_skip_intro(self, item):
+        """No início do episódio, se já aprendeu a abertura dessa série, oferece pular."""
+        key = self._series_key(item)
+        secs = self.cfg["intros"].get(key, 0) if key else 0
+        if secs and secs > 10:
+            self._intro_target = secs
+            self._info(f"<a href='skipintro' style='color:{T['accent']};text-decoration:none;font-weight:700'>"
+                       f"⏭ Pular abertura ({self._fmt_clock(secs)})</a>", 30)
+
+    def _skip_intro(self):
+        if self.vod and self.confirmed and not self.vod["ended"]:
+            self.player.set_time(int(getattr(self, "_intro_target", 0) * 1000))
+            self.info_lbl.setText("")
+
+    def _maybe_learn_intro(self, old_pos, target):
+        """Pulou do começo pra frente num episódio = o tamanho da abertura daquela série."""
+        key = self._series_key(self.current)
+        if key and old_pos <= 25 and 15 <= target <= 240 and target >= old_pos + 10:
+            self.cfg["intros"][key] = int(target)
+            self.cfg.save()
+            self._info(f"Vou lembrar de pular a abertura dessa série (⏭ {self._fmt_clock(int(target))}).", 5)
+
     # ================================================================ reprodução
     def play(self, ch, auto=False, force=False, stream=None):
         """stream = (url, opções) de um link alternativo; sem ele usa o link da lista (ou o que já substituiu)."""
@@ -1623,9 +1688,20 @@ class MainWindow(QMainWindow):
             set_btn_icon(b, "pause")
         self._ts_buttons()
         self._select_current_in_view()
-        if start > 5:
+        if start > 5 and item.kind == "episode":
+            self._show_recap(item, info, start)   # "onde paramos" na série
+        elif start > 5:
             self._info(f"Continuando de {self._fmt_clock(start)} — para ver do começo, clique com o botão "
                        "direito no item.", 8)
+
+    def _show_recap(self, item, info, start):
+        """Recap "onde paramos": episódio, onde você parou e a sinopse dele."""
+        ep = html_escape(display_title(item.name))
+        plot = " ".join((info or "").split())[:220]
+        msg = f"📺 <b>Onde paramos</b> — {ep}: você parou aos {self._fmt_clock(start)}."
+        if plot:
+            msg += f"<br><span style='opacity:.85'>{html_escape(plot)}</span>"
+        self._info(msg, 13)
 
     @staticmethod
     def _fmt_clock(sec):
@@ -1679,6 +1755,8 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(3000, lambda: self.current is item and self._apply_saved_tracks())
                 self._ts_buttons()
                 self._show_marquee(self.current.name)
+                if self.current.kind == "episode":
+                    self._offer_skip_intro(self.current)
             elif now - self.started_at > VOD_CONNECT_TIMEOUT:
                 self._vod_failed("não respondeu")
             return
@@ -1712,6 +1790,7 @@ class MainWindow(QMainWindow):
             return
         self._set_status("■ Terminou", "muted")
         self.video.set_message(f"Fim de “{self.current.name}”")
+        self._ask_rating(self.current)   # 👍/👎 pra ajustar as recomendações
 
     def _vod_restart(self):
         """▶ depois de terminar ou falhar: começa de novo (do ponto salvo, se houver)."""
@@ -1795,6 +1874,9 @@ class MainWindow(QMainWindow):
             media.add_option(f":network-caching={int(self.cfg['net_cache_ms'])}")
         for o in opts:
             media.add_option(o)
+        if self.cfg["night_audio"]:      # modo madrugada: comprime a dinâmica do áudio
+            for o in NIGHT_AUDIO_OPTS:
+                media.add_option(o)
         self.player.set_media(media)
         self.player.play()
 
@@ -1951,7 +2033,10 @@ class MainWindow(QMainWindow):
             return
         if self.vod:
             if self.confirmed and not self.vod["ended"]:
-                self.player.set_time(int(self.seek.value() * 1000))
+                old = self.player.get_time() / 1000
+                target = float(self.seek.value())
+                self.player.set_time(int(target * 1000))
+                self._maybe_learn_intro(old, target)
             return
         if self._ts_active():
             self._ts_open_at(float(self.seek.value()))
@@ -3039,6 +3124,21 @@ class MainWindow(QMainWindow):
         self.view.viewport().update()
         self.cfg.save()
 
+    def _mark_watched(self, ch, watched=True):
+        """"Já assisti": marca (ou desmarca) um filme/episódio como visto, sem precisar abrir.
+        Visto = some das recomendações e da fileira Continuar assistindo."""
+        if watched:
+            length = (self.cfg["resume"].get(ch.url) or [0, 0, 0])[1] or 0
+            self.cfg["resume"][ch.url] = [-1, length, time.time()]
+            self._info(f"Marquei “{display_title(ch.name)}” como já assistido. 🍮", 5)
+        else:
+            self.cfg["resume"].pop(ch.url, None)
+            self._info(f"Desmarquei “{display_title(ch.name)}” — voltou a aparecer nas indicações.", 4)
+        self.cfg.save()
+        self.view.viewport().update()
+        if getattr(self, "home", None) is not None:
+            self.home.refresh()
+
     def _add_recent(self, ch):
         rec = [r for r in self.cfg["recents"] if r["url"] != ch.url]
         rec.insert(0, ch.__dict__.copy())
@@ -3089,6 +3189,14 @@ class MainWindow(QMainWindow):
         if ch.kind == "movie" and self._resume_pos(ch.url):
             m.addAction(icon("refresh", "text", 16), "Assistir do começo",
                         lambda: self.play_ondemand(ch, ch.url, start=0))
+        if ch.kind in ("movie", "episode"):
+            r = self.cfg["resume"].get(ch.url)
+            if r and r[0] == -1:
+                m.addAction(icon("refresh", "text", 16), "Marcar como não assistido",
+                            lambda: self._mark_watched(ch, False))
+            else:
+                m.addAction(icon("film", "text", 16), "Marcar como já assistido",
+                            lambda: self._mark_watched(ch, True))
         cur = self.epg.now_next(ch)[0] if catchup.supports(ch) else None
         if cur and catchup.available(ch, cur[0]):
             m.addAction(icon("back", "text", 16), f"Assistir do começo: {cur[2][:40]}",
@@ -3916,6 +4024,21 @@ class MainWindow(QMainWindow):
         self.cfg["sleep_after_tv"] = on
         self._info("😴 Quando o filme na TV acabar, a tela apaga e o PC dorme (dá 1 minuto para cancelar)."
                    if on else "O PC não vai mais dormir sozinho no fim do filme.", 8)
+
+    def _toggle_night_audio(self, on):
+        """Modo madrugada: liga/desliga o compressor de áudio e reaplica no que está tocando agora."""
+        self.cfg["night_audio"] = on
+        self.cfg.save()
+        self._info("🌙 Modo madrugada ligado: diálogos mais nítidos, sem sustos de volume."
+                   if on else "Modo madrugada desligado.", 6)
+        if self.tvcast.active:
+            return   # o som sai pela TV; vale no próximo que você tocar no PC
+        if self.vod and self.confirmed and not self.vod["ended"]:
+            pos = max(0.0, self.player.get_time() / 1000)
+            self.play_ondemand(self.current, self.vod["url"], self.vod["info"], start=pos,
+                               live=self.vod["live"], playlist=self.vod["next"])
+        elif self.current and not self.vod and self.stream:
+            self._open_stream(self.stream)
 
     def _on_tvcast_status(self, text, color):
         if not text:

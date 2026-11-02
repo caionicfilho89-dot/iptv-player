@@ -3,7 +3,7 @@ para decidir o que assistir. Os títulos indicados pelo Pudinho abrem aqui."""
 import random
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QGuiApplication, QPixmap
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from .catalog import CatalogNode, display_title
@@ -188,7 +188,14 @@ class CompareWindow(QWidget):
 
     def _show(self):
         self.adjustSize()
-        self.resize(max(self.sizeHint().width(), 320), max(self.height(), 640))
+        scr = (self.win.screen() or QGuiApplication.primaryScreen()).availableGeometry()
+        w = min(max(self.sizeHint().width(), 320), scr.width() - 40)    # nunca mais larga que a tela
+        h = min(max(self.height(), 640), scr.height() - 40)
+        self.resize(w, h)
+        # centraliza na tela atual e garante que fica dentro dela (não "some" depois de girar a tela)
+        self.move(scr.center().x() - w // 2, max(scr.top() + 20, scr.center().y() - h // 2))
+        if self.windowState() & Qt.WindowState.WindowMinimized:
+            self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
         self.show()
         self.raise_()
         self.activateWindow()

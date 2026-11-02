@@ -5,6 +5,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QCheckBox, QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
 
 from . import sports
+from .goals import same_team
 from .theme import T
 from .widgets import make_btn, set_btn_icon
 
@@ -107,6 +108,10 @@ class SportsView(QWidget):
         self.count = QLabel("", objectName="muted")
         head.addWidget(self.count)
         head.addStretch(1)
+        self.myteams = QCheckBox("Só meus times")
+        self.myteams.setToolTip("Mostrar só os jogos dos seus times (definidos nas Configurações de esportes)")
+        self.myteams.toggled.connect(self._teams_changed)
+        head.addWidget(self.myteams)
         self.mine = QCheckBox("Só nos meus canais")
         self.mine.setToolTip("Mostrar só os jogos que passam em canais das suas listas")
         self.mine.toggled.connect(self._mine_changed)
@@ -135,6 +140,10 @@ class SportsView(QWidget):
         self.page.win.cfg["sports_mine"] = on
         self.refresh()
 
+    def _teams_changed(self, on):
+        self.page.win.cfg["sports_teams_only"] = on
+        self.refresh()
+
     def _chip(self, path):
         self.sport = path[0] if path and path[0] != "*" else None
         self.refresh(keep_chips=True)
@@ -144,8 +153,18 @@ class SportsView(QWidget):
         self.mine.blockSignals(True)
         self.mine.setChecked(win.cfg["sports_mine"])
         self.mine.blockSignals(False)
+        teams = [tm for tm in win.cfg.get("sports_teams", []) if tm]
+        self.myteams.blockSignals(True)
+        self.myteams.setEnabled(bool(teams))
+        self.myteams.setChecked(bool(teams) and win.cfg.get("sports_teams_only", False))
+        self.myteams.setToolTip("Mostrar só os jogos dos seus times" if teams
+                                else "Defina seus times nas Configurações de esportes para usar isto")
+        self.myteams.blockSignals(False)
         games = [(g, chs) for g, chs in win.sport_games()
                  if (self.replays.isChecked() or not g.replay) and (chs or not self.mine.isChecked())]
+        if teams and self.myteams.isChecked():   # central dos seus times
+            games = [(g, chs) for g, chs in games
+                     if any(same_team(g.home, tm) or same_team(g.away, tm) for tm in teams)]
         kinds = []
         for g, _c in games:
             if g.sport not in kinds:

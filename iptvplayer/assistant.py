@@ -6,6 +6,7 @@ catálogo e executa comandos ("abre o SporTV", "liga a legenda").
 O texto das respostas sai do Gemma 3 (a mesma IA da legenda), na placa de vídeo, sem internet. Sem a IA,
 responde com modelos prontos (as indicações e os jogos continuam funcionando)."""
 import html
+import random
 import re
 import threading
 import time
@@ -93,6 +94,20 @@ RE_MORE = re.compile(r"^(me )?(indica|indique|mostra|manda|quero|tem)? ?(outra c
                      r"nenhum desses|nao gostei( desses)?)( por favor| pra mim| ai| ae| pf| pfv)?$")
 MORE_TEXT = "Me indica outras opções"
 RE_QUOTED = re.compile(r"[“\"‘']([^”\"’']{2,60})[”\"’']")
+# "me faz um resumo de X", "do que se trata X?", "vale a pena X?", "resume sem spoiler X"
+RE_SUMMARY = re.compile(r"\b(resumo|resume|resumir|sinopse|do que (?:se trata|trata|e|eh)|sobre o que (?:e|eh)|"
+                        r"qual (?:a|e) (?:a )?historia|conta (?:sobre|um pouco)|me fala (?:sobre|de)|vale a pena|"
+                        r"sem spoiler)\b")
+# "por que você me indicou isso?", "pq escolheu esses?", "por que esse?"
+RE_WHY = re.compile(r"\b(por ?que|pq)\b.{0,30}\b(indic|recomend|sugeri|escolh|esse|esses|essa|essas|isso|desses)\b")
+# "não sei o que ver", "me ajuda a escolher", "tanto faz, escolhe por mim"
+RE_LOST = re.compile(r"\b(nao sei o que (?:ver|assistir|botar|por)|me ajuda a (?:escolher|decidir)|"
+                     r"escolhe (?:por mim|voce)|voce escolhe|to indeciso|sem ideia|me surpreende|surpresa|"
+                     r"o que (?:eu )?(?:vejo|assisto|poderia ver))\b")
+QUIZ_GENRES = [("😱 Terror", "terror"), ("😂 Comédia", "comédia"), ("💥 Ação", "ação"),
+               ("🔎 Suspense", "suspense"), ("❤️ Romance", "romance"), ("🎲 Surpresa", "__any__")]
+QUIZ_ANY = ["terror", "comédia", "ação", "suspense", "romance", "ficção científica", "drama", "aventura"]
+QUIZ_TIMES = [("⚡ Rapidinho (até ~1h40)", "rapido"), ("🍿 Filmão (2h+)", "longo"), ("🤷 Tanto faz", "qualquer")]
 RELEASES_EVERY = 3 * 3600      # a lista de lançamentos da internet vale por 3 horas
 _releases = {"at": 0.0, "titles": []}
 COMMANDS = {"seek", "pause", "stop", "mute", "volume", "captions", "dub", "tv", "home", "missed", "channel"}
@@ -101,6 +116,46 @@ DONE = {"seek": "Pronto, mexi no tempo do vídeo.", "pause": "Feito: pausei (ou 
         "captions": "Prontinho, mexi na legenda.", "dub": "Prontinho, mexi na dublagem.",
         "tv": "Mandando pra TV!", "home": "Voltei pro Início.", "missed": "Vou ver o que você perdeu…",
         "channel": "Abrindo aí!"}
+
+# "tenho 2 horas", "só tenho uma hora e meia", "um filme de até 90 minutos", "cabe em 2h?"
+RE_TIME = re.compile(r"\b(tenho|so tenho|tempo|cabe|caiba|caber|dura[rt]?|de ate|ate|no maximo|menos de|rapidinho|"
+                     r"curtinho|curto|rapido)\b.{0,24}?"
+                     r"(\d+|meia|uma|um|duas|dois|tres|quatro)\s*(h|hr|hrs|hora|horas|min|minuto|minutos)")
+NUM_WORDS = {"uma": 1, "um": 1, "duas": 2, "dois": 2, "tres": 3, "quatro": 4}
+
+
+def parse_minutes(t):
+    """Minutos disponíveis a partir do pedido ("2 horas", "1h30", "uma hora e meia", "90 minutos")."""
+    total = 0
+    for m in re.finditer(r"(\d+)\s*h(?:oras?|rs?|r\b)?(?:\s*(?:e\s*)?(\d+))?", t):
+        total += int(m.group(1)) * 60 + (int(m.group(2)) if m.group(2) else 0)
+    if total == 0:
+        for m in re.finditer(r"(\d+)\s*min\w*", t):
+            total += int(m.group(1))
+    if total == 0:
+        for w, v in NUM_WORDS.items():
+            if re.search(rf"\b{w}\s+horas?\b", t):
+                total += v * 60
+    if re.search(r"\bmeia\s+hora\b", t):
+        total = 30
+    elif total and re.search(r"\be\s+meia\b", t):
+        total += 30
+    return total
+
+
+def dur_minutes(s):
+    """Duração "HH:MM:SS" (ou "MM:SS", ou "120") em minutos."""
+    parts = str(s or "").strip().split(":")
+    try:
+        if len(parts) == 3:
+            h, m, sec = (int(x) for x in parts)
+            return h * 60 + m + (1 if sec >= 30 else 0)
+        if len(parts) == 2:
+            return int(parts[0])
+    except ValueError:
+        pass
+    m = re.search(r"\d+", str(s or ""))
+    return int(m.group()) if m else 0
 
 
 def fold(text):
@@ -176,6 +231,8 @@ class Brain(QObject):
         self._llm_lock = threading.Lock()
         self._last = None        # última indicação: ("indicacao", texto) ou ("lancamentos", texto), para o "outras"
         self._shown = set()      # títulos já indicados nela (não repetem no "Indicar outras opções")
+        self._last_entries = []  # os títulos da última indicação, para explicar "por que indiquei"
+        self._quiz = None        # "não sei o que ver": {step, genero} enquanto o questionário está ativo
         self._reply.connect(self.answered)
 
     # ---- pedido (chega na tarefa principal; a IA roda em outra)
@@ -185,15 +242,28 @@ class Brain(QObject):
         t = fold(text)
         action, arg = parse_command(text)
         try:
+            if self._quiz is not None and self._quiz_answer(req, text, t):
+                return
+            if RE_LOST.search(t):
+                return self._start_quiz(req, text)
             if self._last and RE_MORE.search(t):   # "indica outra coisa": mesmo pedido, sem repetir títulos
                 kind, first = self._last
                 question = f"{first} (quero outras opções, diferentes das que você já indicou)"
                 if kind == "lancamentos":
                     return self._think(req, question, kind, "", [], prepare=lambda: self._release_info(more=True))
+                if kind == "tempo":
+                    info, actions = self._time_info(first, fold(first), parse_minutes(fold(first)), more=True)
+                    return self._think(req, question, kind, info, actions)
                 info, actions = self._pick_info(first, fold(first), more=True)
                 return self._think(req, question, kind, info, actions)
+            if self._last_entries and RE_WHY.search(t):
+                return self._think(req, text, "porque", self._why_info(), [])
             if RE_RELEASE.search(t) and not re.match(r"(como|onde|tem como|da pra|da para)\b", t):
                 return self._think(req, text, "lancamentos", "", [], prepare=self._release_info)
+            if RE_SUMMARY.search(t):
+                info, actions, found = self._summary_info(text, t)
+                if found:
+                    return self._think(req, text, "resumo", info, actions)
             sport = RE_SPORT.search(t) or action == "game"
             if RE_HELP.search(t) and not (sport and not re.match(r"(como|onde|tem como|da pra|da para)\b", t)):
                 return self._think(req, text, "ajuda", self._help_info(), [])
@@ -203,6 +273,9 @@ class Brain(QObject):
             if action in COMMANDS and len(t.split()) <= 8:
                 self.win._on_voice(text, from_chat=True)
                 return self._done(req, text, DONE.get(action, "Feito!"), [])
+            if RE_TIME.search(t) and parse_minutes(t):
+                info, actions = self._time_info(text, t, parse_minutes(t))
+                return self._think(req, text, "tempo", info, actions)
             if RE_PICK.search(t) or RE_COUPLE.search(t) or (action == "search" and len(t.split()) >= 4 and not re.match(
                     r"(oi|ola|e ai|eai|bom dia|boa tarde|boa noite|tudo bem|valeu|obrigad)", t)):
                 info, actions = self._pick_info(text, t)
@@ -305,6 +378,7 @@ class Brain(QObject):
                 return "Já mostrei tudo o que achei no seu catálogo para esse pedido. Sugira pedir de outro jeito.", []
             return "Não achei nada parecido com esse pedido no seu catálogo.", []
         self._shown.update(id(e) for e in entries)
+        self._last_entries = list(entries)
         lines, actions = [], []
         for i, e in enumerate(entries, 1):
             info = home.info_of(e, fetch=False) or {}
@@ -322,6 +396,171 @@ class Brain(QObject):
             head = (f"Modo casal: você gosta de {couple[0]} e a outra pessoa gosta de {couple[1]}. Opções do seu "
                     "catálogo que juntam os dois gostos (explique por que agrada os dois)")
         return head + " (indique só destes):\n" + "\n".join(lines), actions
+
+    # ---- "não sei o que ver": questionário rápido com botões
+    def _start_quiz(self, req, text):
+        self._quiz = {"step": "genero"}
+        chips = [(lbl, lambda l=lbl: self.win.chat.ask(l)) for lbl, _g in QUIZ_GENRES]
+        self._done(req, text, "Bora achar algo! 🍿 Que pegada você quer hoje?", chips)
+
+    def _quiz_answer(self, req, text, t):
+        """Responde um passo do questionário. Retorna True se consumiu o que a pessoa disse."""
+        step = self._quiz.get("step")
+        if step == "genero":
+            g = self._match_genre(t)
+            if g is None:
+                self._quiz = None
+                return False
+            self._quiz["genero"] = random.choice(QUIZ_ANY) if g == "__any__" else g
+            self._quiz["step"] = "tempo"
+            chips = [(lbl, lambda l=lbl: self.win.chat.ask(l)) for lbl, _v in QUIZ_TIMES]
+            self._done(req, text, "Boa! E quanto tempo você tem?", chips)
+            return True
+        if step == "tempo":
+            tempo = self._match_tempo(t)
+            g = self._quiz.get("genero", "filme")
+            self._quiz = None
+            if tempo == "rapido":
+                q = f"tenho 1h40 pra um {g}"
+                info, actions = self._time_info(q, fold(q), 100)
+                return self._finish_quiz(req, q, "tempo", info, actions)
+            q = f"me indica um {g} bom"
+            info, actions = self._pick_info(q, fold(q))
+            return self._finish_quiz(req, q, "indicacao", info, actions)
+        self._quiz = None
+        return False
+
+    def _finish_quiz(self, req, question, kind, info, actions):
+        self._think(req, question, kind, info, actions)
+        return True
+
+    def _match_genre(self, t):
+        for _lbl, g in QUIZ_GENRES:
+            if g != "__any__" and fold(g) in t:
+                return g
+        if any(w in t for w in ("surpresa", "tanto faz", "qualquer", "voce escolhe", "aleatori")):
+            return "__any__"
+        return None
+
+    def _match_tempo(self, t):
+        if "rapid" in t or "curto" in t:
+            return "rapido"
+        if "film" in t or "longo" in t or "2h" in t or "2 h" in t:
+            return "longo"
+        return "qualquer"
+
+    def _why_info(self):
+        """Fonte para a IA explicar por que indicou os títulos da última indicação."""
+        home = self.win.home
+        rec = getattr(self.win, "recommender", None)
+        gostos = ", ".join(rec.top_genres(4)) if rec is not None else ""
+        lines = []
+        for e in self._last_entries[:MAX_OPTIONS]:
+            info = home.info_of(e, fetch=False) or {}
+            title = display_title(e.label if isinstance(e, CatalogNode) else e.name)
+            lines.append(f"- {title}: gênero {info.get('genre') or 'não informado'}")
+        head = (f"Gostos da pessoa (do que ela costuma assistir): {gostos}\n" if gostos else "")
+        return head + "Títulos que você indicou:\n" + "\n".join(lines)
+
+    def _summary_info(self, text, t):
+        """Resumo sem spoiler de um título do catálogo. Retorna (fonte p/ IA, botões, achou?)."""
+        home = getattr(self.win, "home", None)
+        if home is None or home.catalog is None:
+            return "", [], False
+        quoted = RE_QUOTED.search(text)
+        if quoted:
+            name = quoted.group(1).strip()
+        else:   # tira as palavras do pedido pra sobrar o nome
+            name = RE_SUMMARY.sub(" ", t)
+            name = re.sub(r"\b(sem spoiler|spoilers?|do filme|da serie|da série|o filme|a serie|a série|pra mim|"
+                          r"por favor|pfv|pf|ai|me|de|do|da)\b", " ", name)
+            name = re.sub(r"\s+", " ", name).strip()
+        e = self._in_catalog(name)
+        if e is None and len(name) >= 3:
+            found = home.catalog.search(name)
+            e = (found["titles"] or found["movies"] or [None])[0]
+        if e is None:
+            return "", [], False
+        info = home.info_of(e, fetch=False) or {}
+        title = display_title(e.label if isinstance(e, CatalogNode) else e.name)
+        kind = "série" if isinstance(e, CatalogNode) else "filme"
+        action = [(f"{'📺' if kind == 'série' else '🎬'} {title}", lambda e=e: self.win.compare.add(e))]
+        plot = " ".join((info.get("plot") or "").split())
+        if not plot:
+            return (f"Você quer um resumo sem spoiler de “{title}”, mas eu ainda não tenho a sinopse dele. "
+                    "Diga isso de forma simpática e ofereça abrir a página do título.", action, True)
+        extra = ", ".join(x for x in (info.get("year", ""), info.get("genre", "")) if x)
+        src = f"TÍTULO: {title} ({kind}{', ' + extra if extra else ''}).\nSINOPSE-FONTE: {plot[:700]}"
+        return src, action, True
+
+    def _time_info(self, text, t, minutes, more=False):
+        """"Tenho 2 horas": filmes do catálogo cuja duração cabe no tempo que a pessoa tem."""
+        home = getattr(self.win, "home", None)
+        if home is None or home.catalog is None:
+            return "Você ainda não tem uma lista com filmes e séries no Pudim.", []
+        if not more:
+            self._last, self._shown = ("tempo", text), set()
+        query = re.sub(r"\s+", " ", FILLER.sub(" ", RE_TIME.sub(" ", t))).strip()   # gênero/assunto junto?
+        pool = home.topic_entries(query) or home.described_entries(query) if len(query.split()) >= 2 else []
+        entries = self._fit_by_time(home, pool, minutes) or self._fit_by_time(home, None, minutes)
+        picked, keys = [], set()
+        for e in entries:
+            key = _title_key(e)
+            if key in keys or id(e) in self._shown:
+                continue
+            keys.add(key)
+            picked.append(e)
+            if len(picked) >= MAX_OPTIONS:
+                break
+        if not picked:
+            if more:
+                return "Já mostrei o que achei que cabe nesse tempo. Sugira pedir de outro jeito.", []
+            return (f"Não achei filmes com duração conhecida que caibam em {minutes} minutos no seu catálogo. "
+                    "Diga isso de um jeito simpático e ofereça indicar de outro jeito."), []
+        self._shown.update(id(e) for e in picked)
+        self._last_entries = list(picked)
+        lines, actions = [], []
+        for i, e in enumerate(picked, 1):
+            info = home.info_of(e, fetch=False) or {}
+            title = display_title(e.name)
+            dmin = dur_minutes(info.get("duration", ""))
+            extra = ", ".join(x for x in (info.get("year", ""), info.get("genre", ""),
+                                          f"nota {info['rating']:.1f}" if info.get("rating") else "",
+                                          f"{dmin} min" if dmin else "") if x)
+            plot = " ".join((info.get("plot") or "").split())[:200]
+            lines.append(f"{i}. {title} (filme{', ' + extra if extra else ''}): {plot or 'sem sinopse'}")
+            actions.append((f"🎬 {title}", lambda e=e: self.win.compare.add(e)))
+        head = (f"Você tem cerca de {minutes} minutos. Filmes do catálogo que cabem nesse tempo "
+                "(indique só destes, dizendo a duração de cada um)")
+        return head + ":\n" + "\n".join(lines), actions
+
+    def _fit_by_time(self, home, pool, minutes):
+        """Filmes com duração entre um piso e o tempo disponível; melhores notas primeiro."""
+        upper, floor = minutes + 8, max(40, minutes - 90)
+
+        def rating_of(info):
+            try:
+                return float(info.get("rating") or 0)
+            except (TypeError, ValueError):
+                return 0.0
+        out = []
+        if pool:
+            for e in pool:
+                if isinstance(e, CatalogNode):   # séries não entram no filtro por duração de filme
+                    continue
+                info = home.info_of(e, fetch=False) or {}
+                d = dur_minutes(info.get("duration", ""))
+                if d and floor <= d <= upper:
+                    out.append((rating_of(info), d, e))
+        else:
+            home._title_entries((), ())          # garante o mapa id do filme -> item do catálogo
+            by_sid = home._by_sid or {}
+            for sid, info in list(self.win.meta.movies.items()):
+                d = dur_minutes(info.get("duration", ""))
+                if d and floor <= d <= upper and sid in by_sid:
+                    out.append((rating_of(info), d, by_sid[sid]))
+        out.sort(key=lambda x: (-x[0], abs(minutes - x[1])))
+        return [e for _, _, e in out]
 
     def _couple_entries(self, a, b):
         """Títulos que agradam os dois gostos: primeiro os que aparecem nas duas buscas, depois os que a busca
@@ -449,6 +688,16 @@ class Brain(QObject):
             "indicacao": "Indique 2 a 4 títulos da lista abaixo que combinem com o pedido, escrevendo o nome "
                          "exatamente como na lista e dizendo o porquê em poucas palavras. Não escreva botões nem "
                          "colchetes: o app mostra os botões sozinho.",
+            "tempo": "A pessoa disse quanto tempo tem. Indique 2 a 4 títulos da lista abaixo que caibam nesse "
+                     "tempo, escrevendo o nome exatamente como na lista e dizendo a duração de cada um e o porquê "
+                     "em poucas palavras. Não escreva botões nem colchetes: o app mostra os botões sozinho.",
+            "porque": "A pessoa quer saber por que você indicou aqueles títulos. Explique em no máximo 1 frase "
+                      "por título, usando só o gênero de cada um e os gostos informados abaixo. Não invente. Se não "
+                      "houver gostos informados, diga que indicou por serem bem avaliados e do estilo que ela pediu.",
+            "resumo": "A pessoa quer um resumo SEM SPOILERS. Com base só na sinopse-fonte abaixo, escreva um "
+                      "resumo curto (2 a 3 frases) que dê vontade de assistir: apresente a premissa, o gênero e o "
+                      "clima, SEM revelar reviravoltas, segredos, mortes nem o final. Se a sinopse-fonte já tiver "
+                      "spoilers, não os repita. Não invente nada que não esteja na sinopse-fonte.",
             "futebol": "Responda sobre os jogos usando só as informações abaixo. Se tiver botão de assistir, "
                        "lembre que dá para clicar nele.",
             "ajuda": "Explique como fazer usando só o manual abaixo. Cite o atalho quando existir.",
@@ -467,9 +716,9 @@ class Brain(QObject):
                 log.exception("Pudinho: IA")
         if not answer:
             answer = self._fallback(kind, info, actions)
-        elif kind in ("indicacao", "lancamentos"):
+        elif kind in ("indicacao", "lancamentos", "tempo"):
             actions = _mentioned_first(answer, actions)
-        if kind in ("indicacao", "lancamentos") and actions:
+        if kind in ("indicacao", "lancamentos", "tempo") and actions:
             actions = list(actions) + [("🔄 Indicar outras opções", lambda: self.win.chat.ask(MORE_TEXT))]
         self.history += [("user", question), ("model", answer)]
         del self.history[:-HISTORY_TURNS * 2]
@@ -494,8 +743,14 @@ class Brain(QObject):
 
     @staticmethod
     def _fallback(kind, info, actions):
-        if kind in ("indicacao", "lancamentos"):
+        if kind in ("indicacao", "lancamentos", "tempo"):
             return "Separei estes do seu catálogo, é só clicar:" if actions else info
+        if kind == "porque":
+            return "Indiquei esses pensando no seu gosto e porque são bem avaliados. 🍮"
+        if kind == "resumo":   # sem IA: as 2 primeiras frases da sinopse (costuma ser só a premissa)
+            plot = info.split("SINOPSE-FONTE:", 1)[-1].strip()
+            frases = re.split(r"(?<=[.!?])\s+", plot)
+            return " ".join(frases[:2])[:300] or info
         if kind == "futebol":
             return info.replace("Jogos nos seus canais:\n", "").replace("- ", "")
         if kind == "ajuda":
