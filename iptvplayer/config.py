@@ -54,6 +54,7 @@ DEFAULTS = {
     "schedule": [],
     "resume": {},  # onde parou em filmes/episódios: {url: [segundos (-1 = assistido), duração, quando]}
     "region": "all",  # filtro de país da tela Início (themes.REGIONS)
+    "sleep_after_tv": False,  # quando o filme mandado pra TV acaba: apaga a tela e o PC dorme
     "goal_alerts": True,  # avisa quando sai gol nos jogos que passam nos seus canais (goals.py)
     "tv_ip": "", "tv_token": "", "tv_dmr": "",  # "Mandar pra TV" (tvcast.py): endereço de controle do player da TV
     "sort_mode": "brasil",  # brasil (BR primeiro), list, stable (mais estáveis primeiro) ou name

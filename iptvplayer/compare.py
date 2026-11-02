@@ -1,6 +1,8 @@
 """Comparar títulos: uma janela com até 4 cartões lado a lado (capa, nota, ano, gênero, duração, elenco e sinopse),
 para decidir o que assistir. Os títulos indicados pelo Pudinho abrem aqui."""
-from PyQt6.QtCore import Qt
+import random
+
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
@@ -10,6 +12,7 @@ from .theme import T
 from .widgets import make_btn
 
 MAX_CARDS = 4
+SPIN_STEPS = 14          # sorteio: quantas vezes o destaque pula de cartão antes de parar
 CARD_W = 260
 POSTER = (180, 260)
 
@@ -114,6 +117,8 @@ class _Card(QFrame):
 
 
 class CompareWindow(QWidget):
+    HEAD = "Comparar títulos  ·  clique em mais títulos no Pudinho para pôr lado a lado (até 4)"
+
     def __init__(self, win):
         super().__init__(win, Qt.WindowType.Window)
         self.win = win
@@ -122,9 +127,17 @@ class CompareWindow(QWidget):
         self.cards = []
         v = QVBoxLayout(self)
         v.setContentsMargins(14, 12, 14, 14)
-        head = QLabel("Comparar títulos  ·  clique em mais títulos no Pudinho para pôr lado a lado (até 4)",
-                      objectName="cmpHead")
-        v.addWidget(head)
+        top = QHBoxLayout()
+        self.head = QLabel(self.HEAD, objectName="cmpHead")
+        top.addWidget(self.head, 1)
+        self.spin_btn = QPushButton("🎲  Não consigo decidir", objectName="cmpSpin")
+        self.spin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.spin_btn.setToolTip("O Pudim sorteia um dos títulos para vocês")
+        self.spin_btn.clicked.connect(self.spin)
+        top.addWidget(self.spin_btn)
+        v.addLayout(top)
+        self._spin_timer = QTimer(self, singleShot=True, timeout=self._spin_step)
+        self._spin_left, self._spin_at, self._spin_end = 0, 0, 0
         self.row = QHBoxLayout()
         self.row.setSpacing(12)
         self.row.addStretch(1)
@@ -133,6 +146,10 @@ class CompareWindow(QWidget):
             #cmpWindow {{ background: {T['bg']}; }}
             #cmpHead {{ color: {T['muted']}; padding-bottom: 6px; }}
             #cmpCard {{ background: {T['surface']}; border: 1px solid {T['border']}; border-radius: 12px; }}
+            #cmpCard[pick="true"] {{ border: 3px solid {T['accent']}; }}
+            QPushButton#cmpSpin {{ background: {T['surface2']}; color: {T['text']}; border: 1px solid {T['border']};
+                                   border-radius: 14px; padding: 6px 14px; font-weight: 600; }}
+            QPushButton#cmpSpin:hover {{ border-color: {T['accent']}; }}
             #cmpKind {{ color: {T['accent']}; font-size: 10px; font-weight: 700; letter-spacing: 1px; }}
             #cmpTitle {{ color: {T['strong']}; font-size: 15px; font-weight: 700; }}
             #cmpFacts {{ color: {T['star']}; }}
@@ -156,12 +173,14 @@ class CompareWindow(QWidget):
         card = _Card(self.win, e, self._remove)
         self.cards.append(card)
         self.row.insertWidget(self.row.count() - 1, card)
+        self._spin_reset()
         self._show()
 
     def _remove(self, card):
         if card in self.cards:
             self.cards.remove(card)
             card.deleteLater()
+        self._spin_reset()
         if not self.cards:
             self.hide()
         else:
@@ -173,6 +192,44 @@ class CompareWindow(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
+
+    # ---- sorteio ("Não consigo decidir")
+    def _mark(self, chosen):
+        for c in self.cards:
+            c.setProperty("pick", c is chosen)
+            c.style().unpolish(c)
+            c.style().polish(c)
+
+    def _spin_reset(self):
+        self._spin_timer.stop()
+        self._mark(None)
+        self.head.setText(self.HEAD)
+        self.spin_btn.setVisible(len(self.cards) >= 2)
+        self.spin_btn.setEnabled(True)
+
+    def spin(self):
+        if len(self.cards) < 2:
+            return
+        self._spin_end = random.randrange(len(self.cards))
+        # dá algumas voltas e para exatamente no sorteado
+        self._spin_left = SPIN_STEPS + (self._spin_end - SPIN_STEPS) % len(self.cards)
+        self._spin_at = 0
+        self.spin_btn.setEnabled(False)
+        self.head.setText("🎲  Sorteando…")
+        self._spin_step()
+
+    def _spin_step(self):
+        if not self.cards:
+            return
+        self._mark(self.cards[self._spin_at % len(self.cards)])
+        if self._spin_left <= 0:
+            winner = self.cards[self._spin_at % len(self.cards)]
+            self.head.setText(f"🏆  O Pudim escolheu: {_title(winner.e)}! É só apertar ▶ Assistir.")
+            self.spin_btn.setEnabled(True)
+            return
+        self._spin_left -= 1
+        self._spin_at += 1
+        self._spin_timer.start(70 + (SPIN_STEPS + 4 - min(self._spin_left, SPIN_STEPS + 4)) * 22)   # vai freando
 
     def _poster_ready(self, url):
         for c in self.cards:

@@ -56,6 +56,10 @@ MANUAL = """MANUAL DO PUDIM
 - Retrospectiva (Ctrl+Shift+H): seus canais mais vistos e conquistas.
 - Listas: no Menu do Início dá para adicionar sua lista M3U ou entrar com a conta (Xtream).
 - Apagar a tela do PC (Ctrl+Shift+B ou botão da lua): os monitores ficam pretos e desligam a luz enquanto o filme passa na TV; qualquer tecla ou clique volta.
+- Comparar títulos: clicar num título indicado pelo Pudinho abre a janela de comparação, até 4 lado a lado (capa, nota, duração, elenco, sinopse). O botão "Não consigo decidir" sorteia um deles.
+- Modo casal: diga "eu gosto de suspense e ela de comédia" e o Pudinho procura títulos que agradam os dois.
+- Dormir quando o filme na TV acabar: no menu Mais; no fim do filme a tela apaga e o PC dorme (1 minuto para cancelar com qualquer tecla).
+- Continuar de onde parou: filmes vistos na TV também guardam onde você parou (fileira Continuar assistindo e botão Continuar).
 - Pudinho (Ctrl+J): este chat."""
 
 RE_HELP = re.compile(r"^(como|onde|cade|qual|quais|o que e|o que significa|pra que|para que|por que|porque|tem como|"
@@ -67,6 +71,12 @@ RE_PICK = re.compile(r"\b(indica|indique|recomenda|recomende|sugere|sugira|suges
                      r"pra assistir|para assistir|pra ver|algum filme|alguma serie|algo|filme|filmes|serie|series|"
                      r"parecid|tipo|igual|estilo|semelhante|documentario|desenho|anime|novela|"
                      r"terror|comedia|suspense|romance|acao|drama|ficcao)\b")
+PARTNER = (r"ela|ele|minha namorada|meu namorado|minha esposa|meu marido|minha mulher|minha mina|meu boy|"
+           r"a namorada|o namorado|a patroa|o mozao|a mozao|minha noiva|meu noivo|minha crush")
+RE_COUPLE = re.compile(r"(?:gosto|curto|prefiro|amo|adoro)(?: mais)?(?: de| do| da)? (.+?)(?:,| e) (?:" + PARTNER
+                       + r")(?: ja| so)?(?: gosta| curte| prefere| ama| adora)?(?: mais)?(?: de| do| da)? (.+)$")
+RE_COUPLE_TAIL = re.compile(r"\s*(?:,|\b(?:o que|me indica|indica|me recomenda|recomenda|qual|alguma|algum|pra gente|"
+                            r"pra nos|juntos)\b).*$")
 RE_SIMILAR = re.compile(r"\b(?:parecid[oa]s?|tipo|igual|estilo|semelhantes?|no estilo|na linha)"
                         r"(?: (?:com|a|ao|de|do|da|que))? (.+)$")
 FILLER = re.compile(r"\b(me|pra mim|por favor|pfv|pf|voce|vc|ai|indica|indique|recomenda|recomende|sugere|sugira|"
@@ -108,6 +118,12 @@ def clean_reply(text):
     t = re.sub(r"\[[^\]\n]{1,80}\]", "", t)   # às vezes ela desenha "[Mostrar X]": os botões de verdade vêm embaixo
     t = re.sub(rf"^{NAME}\s*:\s*", "", t.strip(), flags=re.I)
     return re.sub(r"\n{3,}", "\n\n", t).strip()
+
+
+def _title_key(e):
+    name = fold(display_title(e.label if isinstance(e, CatalogNode) else e.name))
+    return re.sub(r"\s+", " ", re.sub(r"\b(4k|uhd|fhd|hd|sd|1080p|720p|h265|legendado|dublado|leg|dub)\b", "",
+                                      name)).strip()
 
 
 def release_titles():
@@ -187,7 +203,7 @@ class Brain(QObject):
             if action in COMMANDS and len(t.split()) <= 8:
                 self.win._on_voice(text, from_chat=True)
                 return self._done(req, text, DONE.get(action, "Feito!"), [])
-            if RE_PICK.search(t) or (action == "search" and len(t.split()) >= 4 and not re.match(
+            if RE_PICK.search(t) or RE_COUPLE.search(t) or (action == "search" and len(t.split()) >= 4 and not re.match(
                     r"(oi|ola|e ai|eai|bom dia|boa tarde|boa noite|tudo bem|valeu|obrigad)", t)):
                 info, actions = self._pick_info(text, t)
                 return self._think(req, text, "indicacao", info, actions)
@@ -252,8 +268,13 @@ class Brain(QObject):
             return "Você ainda não tem uma lista com filmes e séries no Pudim.", []
         if not more:
             self._last, self._shown = ("indicacao", text), set()
-        entries, base = [], None
-        m = RE_SIMILAR.search(t)
+        entries, base, couple = [], None, None
+        mc = RE_COUPLE.search(t)
+        if mc:   # modo casal: "eu gosto de suspense e ela de comédia"
+            couple = tuple(RE_COUPLE_TAIL.sub("", x).strip() for x in mc.groups())
+            if all(couple):
+                entries = self._couple_entries(*couple)
+        m = None if entries else RE_SIMILAR.search(t)
         if m:
             name = m.group(1).strip()
             found = home.catalog.search(name)
@@ -269,8 +290,16 @@ class Brain(QObject):
                 found = home.catalog.search(query)
                 entries = found["titles"] + found["movies"]
         watched = {u for u, v in self.win.cfg["resume"].items() if v and v[0] == -1}
-        entries = [e for e in entries if (isinstance(e, CatalogNode) or e.url not in watched)
-                   and id(e) not in self._shown][:MAX_OPTIONS]
+        picked, keys = [], set()
+        for e in entries:   # o mesmo filme em 4K/HD/legendado conta uma vez só
+            key = _title_key(e)
+            if key in keys or id(e) in self._shown or (not isinstance(e, CatalogNode) and e.url in watched):
+                continue
+            keys.add(key)
+            picked.append(e)
+            if len(picked) >= MAX_OPTIONS:
+                break
+        entries = picked
         if not entries:
             if more:
                 return "Já mostrei tudo o que achei no seu catálogo para esse pedido. Sugira pedir de outro jeito.", []
@@ -289,7 +318,32 @@ class Brain(QObject):
             actions.append((f"{icon} {title}", lambda e=e: self.win.compare.add(e)))
         head = (f"Parecidos com {display_title(base.label if isinstance(base, CatalogNode) else base.name)}"
                 if base is not None else "Opções do seu catálogo para esse pedido")
+        if couple and all(couple):
+            head = (f"Modo casal: você gosta de {couple[0]} e a outra pessoa gosta de {couple[1]}. Opções do seu "
+                    "catálogo que juntam os dois gostos (explique por que agrada os dois)")
         return head + " (indique só destes):\n" + "\n".join(lines), actions
+
+    def _couple_entries(self, a, b):
+        """Títulos que agradam os dois gostos: primeiro os que aparecem nas duas buscas, depois os que a busca
+        pelo sentido acha misturando os dois, depois um de cada, alternando."""
+        home = self.win.home
+
+        def find(q):
+            found = home.described_entries(q) if len(q.split()) >= 3 else []
+            return found or home.topic_entries(q) or home.described_entries(f"filme de {q} muito bom")
+
+        first, second = find(a), find(b)
+        in_second = {id(e) for e in second}
+        pool = [e for e in first if id(e) in in_second]
+        pool += home.described_entries(f"{a} misturado com {b}")
+        for x, y in zip(first, second):
+            pool += [x, y]
+        out, seen = [], set()
+        for e in pool:
+            if id(e) not in seen:
+                seen.add(id(e))
+                out.append(e)
+        return out
 
     def _entry_lines(self, entries):
         home = self.win.home
@@ -452,7 +506,7 @@ class Brain(QObject):
 
 class ChatPanel(QFrame):
     """Painel lateral do chat."""
-    SUGGESTIONS = ("Me indica um filme de suspense", "O Corinthians joga hoje?", "Como mando pra TV?",
+    SUGGESTIONS = ("Me indica um filme de suspense", "O Corinthians joga hoje?", "Eu gosto de suspense e ela de comédia",
                    "Quais lançamentos já tem no meu catálogo?")
 
     def __init__(self, win):

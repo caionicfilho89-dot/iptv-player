@@ -60,7 +60,7 @@ from .voice import VoiceControl, parse_command
 from .adbreak import LogoDetector
 from .tvcast import TvCast
 from .assistant import ChatPanel
-from .blackout import Blackout
+from .blackout import Blackout, sleep_pc
 from .compare import CompareWindow
 from .updater import UpdateDownloader, can_self_update, run_installer, setup_asset
 from .theme import T, app_icon, app_icon_pixmap, apply_theme, build_style, icon
@@ -76,6 +76,7 @@ STALL_TIMEOUT = 12           # segundos sem avançar = travado
 VOD_CONNECT_TIMEOUT = 30     # filmes e o que já passou demoram mais para abrir
 TV_VOLUME_SCALE = 0.4        # cada ponto do volume do PC mexe 0,4 no da TV (100 na TV é altíssimo)
 TV_VOLUME_MAX = 60
+TV_SLEEP_SECONDS = 60        # "dormir quando o filme acabar": tempo para cancelar antes de o PC dormir
 VOD_REFRESH = 3 * 86400      # filmes e séries de uma conta Xtream são baixados de novo depois de 3 dias
 MAX_CONSECUTIVE_FAILS = 25   # evita loop infinito pulando canais
 LIST_MAX_AGE = 86400          # atualização automática das listas (1× por dia)
@@ -206,6 +207,10 @@ class MainWindow(QMainWindow):
         self.tvcast.progress.connect(self._on_tvcast_progress)
         self._tv_muted = False
         self._tv_pc_vol0 = 100    # volume do PC quando começou a passar na TV
+        self._tv_played = (0.0, 0.0)   # (posição, duração) da última vez que a TV estava tocando
+        self._tv_saved_at = 0.0
+        self._sleep_timer = QTimer(self, singleShot=True, interval=TV_SLEEP_SECONDS * 1000,
+                                   timeout=self._tv_sleep_now)
         self._build_ui()
         self.overlay = FullscreenOverlay()
         self._wire_overlay()
@@ -710,6 +715,10 @@ class MainWindow(QMainWindow):
         act(m, self.tv_btn, "Mandar pra TV   Ctrl+Shift+T", "tv")
         m.addAction(icon("chat", "text", 16), "Pudinho, o assistente   Ctrl+J", self.toggle_chat)
         m.addAction(icon("moon", "text", 16), "Apagar a tela do PC   Ctrl+Shift+B", lambda: self.blackout.start())
+        a = m.addAction(icon("timer", "text", 16), "Dormir quando o filme na TV acabar")
+        a.setCheckable(True)
+        a.setChecked(self.cfg["sleep_after_tv"])
+        a.toggled.connect(self._toggle_sleep_after_tv)
         m.addAction(icon("guide", "text", 16), "O que eu perdi?   Ctrl+Shift+R", self.what_did_i_miss)
         act(m, self.adskip_btn, "Pular intervalo (sem som no comercial)", "next")
         act(m, self.dub_btn, "Dublagem por IA   Ctrl+U", "dub")
@@ -3834,6 +3843,8 @@ class MainWindow(QMainWindow):
     def _on_tvcast_progress(self, pos, dur, state):
         """Passando na TV: a barra de tempo e o ▶/❚❚ do PC mostram o que a TV está fazendo."""
         vod = self.tvcast.vod
+        if vod:
+            self._tv_track(pos, dur, state)
         self.seek_row.setVisible(vod)
         for b in (self.back_btn, self.fwd_btn):
             b.setEnabled(vod)
@@ -3848,8 +3859,52 @@ class MainWindow(QMainWindow):
         self.seek_pos_lbl.setText(self._fmt_clock(pos))
         self.seek_end_lbl.setText(self._fmt_clock(dur) if dur > 0 else "")
 
+    def _tv_track(self, pos, dur, state):
+        """Filme/episódio na TV: guarda onde parou (para o "Continuar" e a fileira Continuar assistindo) e
+        percebe quando acabou."""
+        item = self.tvcast.channel
+        if item is None or getattr(item, "kind", "") not in ("movie", "episode") or dur <= 0:
+            return
+        last_pos, last_dur = self._tv_played
+        if state == "PLAYING":
+            self._tv_played = (pos, dur)
+            if time.monotonic() - self._tv_saved_at > 15 and pos > 60:
+                self._tv_saved_at = time.monotonic()
+                done = pos > dur - 120 and pos / dur > 0.9
+                self.cfg["resume"][item.url] = [-1 if done else pos, dur, time.time()]
+        elif state == "STOPPED" and last_dur and last_pos >= last_dur - 90:
+            self._tv_played = (0.0, 0.0)
+            self._tv_finished(item, last_dur)
+
+    def _tv_finished(self, item, dur):
+        log.info("TV: %s terminou", item.name)
+        self.cfg["resume"][item.url] = [-1, dur, time.time()]   # assistido
+        self.cfg.save()
+        if not self.cfg["sleep_after_tv"]:
+            return
+        self._sleep_timer.start()
+        self.blackout.start(f"“{item.name}” acabou. O PC vai dormir em {TV_SLEEP_SECONDS} segundos.\n"
+                            "Aperte qualquer tecla ou clique para cancelar.", on_wake=self._tv_sleep_cancel)
+
+    def _tv_sleep_cancel(self):
+        if self._sleep_timer.isActive():
+            self._sleep_timer.stop()
+            self._info("😴 Cancelado: o PC não vai dormir.", 6)
+
+    def _tv_sleep_now(self):
+        self.tvcast.stop()
+        self.cfg.save()
+        self.blackout.on_wake = None
+        sleep_pc()
+
+    def _toggle_sleep_after_tv(self, on):
+        self.cfg["sleep_after_tv"] = on
+        self._info("😴 Quando o filme na TV acabar, a tela apaga e o PC dorme (dá 1 minuto para cancelar)."
+                   if on else "O PC não vai mais dormir sozinho no fim do filme.", 8)
+
     def _on_tvcast_status(self, text, color):
         if not text:
+            self.cfg.save()   # onde parou no filme da TV
             self.tv_btn.setChecked(False)
             self.video.set_message("")
             self._tv_muted = False
@@ -3863,7 +3918,9 @@ class MainWindow(QMainWindow):
             self.tv_btn.setChecked(False)
         self.video.set_message(text + ("\nPause, volte, avance e mude o volume por aqui mesmo. Escolha outro canal "
                                        "para trocar na TV, ou aperte o botão da TV para parar.\n🌙 Apague a tela do "
-                                       "PC com Ctrl+Shift+B (qualquer tecla volta)." if color == "ok" else ""))
+                                       "PC com Ctrl+Shift+B (qualquer tecla volta)" + (" · 😴 o PC dorme quando o "
+                                       "filme acabar" if self.cfg["sleep_after_tv"] else "") + "."
+                                       if color == "ok" else ""))
         self._info(text, 8)
 
     def closeEvent(self, e):
