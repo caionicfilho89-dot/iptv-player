@@ -1525,6 +1525,7 @@ class MainWindow(QMainWindow):
         """stream = (url, opções) de um link alternativo; sem ele usa o link da lista (ou o que já substituiu)."""
         if ch is None:
             return
+        self._close_trailer()
         if ch.kind == "series":
             return self.open_series(ch)
         if ch.kind in ("movie", "episode"):
@@ -1589,6 +1590,7 @@ class MainWindow(QMainWindow):
         """Toca algo com começo e fim: filme, episódio ou programa que já passou (catch-up).
         item: o que aparece como tocando (item.url é a chave para continuar de onde parou);
         live: canal ao vivo do botão "ao vivo"; playlist: próximos episódios [(item, info)]."""
+        self._close_trailer()
         if self.tvcast.active:   # mandando pra TV: o filme/episódio escolhido vai para a TV
             if not self.tvcast.start_vod(item, url, start or 0):
                 self._info("Esse vídeo não dá para mandar para a TV.", 6)
@@ -3314,6 +3316,11 @@ class MainWindow(QMainWindow):
         if self._trailer is None:
             self._trailer = TrailerWindow(self.instance)
         self._trailer.open(title, year, trailer_id)
+
+    def _close_trailer(self):
+        """Fecha a janelinha do trailer (quando o usuário vai assistir algo de verdade)."""
+        if self._trailer is not None and self._trailer.isVisible():
+            self._trailer.stop()
 
     def exit_pip(self, stop=False):
         pip, self.pip = self.pip, None

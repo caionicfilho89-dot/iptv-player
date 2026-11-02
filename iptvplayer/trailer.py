@@ -1,5 +1,6 @@
 """Janela do trailer: abre por cima da página do filme para o usuário ver o trailer
 enquanto decide. Tem o player de vídeo próprio (VLC), então não atrapalha o que já estava tocando."""
+import threading
 import time
 import webbrowser
 
@@ -104,10 +105,16 @@ class TrailerWindow(QWidget):
     def open(self, title, year="", trailer_id=""):
         self._req += 1
         self._page_url = ""
+        # aposenta o player anterior num fio separado e começa um novo e limpo para este trailer
+        self._poll.stop()
+        old, self.player = self.player, self.instance.media_player_new()
+        threading.Thread(target=lambda: _safe_stop(old), daemon=True, name="trailer-stop").start()
+        self.player.audio_set_mute(False)
         self.title.setText(f"Trailer — {title}" if title else "Trailer")
         self.video.set_message("Procurando o trailer…")
         set_btn_icon(self.play_btn, "pause", "white")
         self.play_btn.setToolTip("Pausar")
+        set_btn_icon(self.mute_btn, "volume", "white")
         self.show()
         self.raise_()
         self.activateWindow()
@@ -175,12 +182,19 @@ class TrailerWindow(QWidget):
     def stop(self):
         self._req += 1          # invalida qualquer resolução em andamento
         self._poll.stop()
-        try:
-            self.player.stop()
-        except Exception:  # noqa: BLE001
-            pass
         self.hide()
+        # IMPORTANTE: parar o VLC na própria thread da tela (com o vídeo embutido) trava o programa.
+        # Então paramos num fio separado e a janela some na hora.
+        pl = self.player
+        threading.Thread(target=lambda: _safe_stop(pl), daemon=True, name="trailer-stop").start()
 
     def closeEvent(self, e):
         self.stop()
         e.ignore()              # fechar = só esconder e parar; a janela é reaproveitada
+
+
+def _safe_stop(player):
+    try:
+        player.stop()
+    except Exception as e:  # noqa: BLE001
+        log.info("Trailer: erro ao parar (%s)", e)
