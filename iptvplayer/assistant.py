@@ -1,7 +1,8 @@
 """Pudinho: o assistente do Pudim, um chat como o dos sites.
 
 Indica filmes e séries do catálogo da pessoa (pela busca por sentido das sinopses), acha títulos pela descrição,
-explica como usar o app, responde sobre os jogos do dia e executa comandos ("abre o SporTV", "liga a legenda").
+explica como usar o app, responde sobre os jogos do dia, confere quais lançamentos em alta na internet já estão no
+catálogo e executa comandos ("abre o SporTV", "liga a legenda").
 O texto das respostas sai do Gemma 3 (a mesma IA da legenda), na placa de vídeo, sem internet. Sem a IA,
 responde com modelos prontos (as indicações e os jogos continuam funcionando)."""
 import html
@@ -9,12 +10,14 @@ import re
 import threading
 import time
 import unicodedata
+import urllib.parse
+import urllib.request
 
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy,
                              QVBoxLayout, QWidget)
 
-from .catalog import CatalogNode, display_title
+from .catalog import MOVIES, CatalogNode, display_title
 from .goals import same_team
 from .log import log
 from .theme import T, app_icon_pixmap
@@ -68,6 +71,19 @@ RE_SIMILAR = re.compile(r"\b(?:parecid[oa]s?|tipo|igual|estilo|semelhantes?|no e
 FILLER = re.compile(r"\b(me|pra mim|por favor|pfv|pf|voce|vc|ai|indica|indique|recomenda|recomende|sugere|sugira|"
                     r"alguma sugestao|sugestao|quero|queria|ver|assistir|um|uma|uns|umas|algum|alguma|algo|bom|boa|"
                     r"legal|pra|para|hoje|agora)\b")
+RE_RELEASE = re.compile(r"\b(lancamento|lancamentos|lancou|estreia|estreias|estreou|estrearam|novidade|novidades|"
+                        r"saiu agora|sairam|recem lancad|filmes? novos?|series? novas?|novos filmes|novas series|"
+                        r"em alta|do momento|bombando|cinema)\b")
+RELEASE_QUERIES = ("estreia filme cinema", "estreias da semana cinema", "filme estreia Netflix",
+                   'filme estreia "Prime Video" OR Max OR "Disney+" OR "Apple TV"',
+                   'série estreia Netflix OR "Prime Video" OR Max')
+RE_MORE = re.compile(r"^(me )?(indica|indique|mostra|manda|quero|tem)? ?(outra coisa|outras? (opcoes|opcao|coisas?|"
+                     r"sugestoes|indicacoes)|outros?( filmes?| titulos?| series?)?|mais (opcoes|sugestoes|coisas?)|"
+                     r"nenhum desses|nao gostei( desses)?)( por favor| pra mim| ai| ae| pf| pfv)?$")
+MORE_TEXT = "Me indica outras opções"
+RE_QUOTED = re.compile(r"[“\"‘']([^”\"’']{2,60})[”\"’']")
+RELEASES_EVERY = 3 * 3600      # a lista de lançamentos da internet vale por 3 horas
+_releases = {"at": 0.0, "titles": []}
 COMMANDS = {"seek", "pause", "stop", "mute", "volume", "captions", "dub", "tv", "home", "missed", "channel"}
 DONE = {"seek": "Pronto, mexi no tempo do vídeo.", "pause": "Feito: pausei (ou continuei) pra você.",
         "stop": "Desliguei o vídeo.", "mute": "Mexi no som.", "volume": "Ajustei o volume.",
@@ -93,6 +109,35 @@ def clean_reply(text):
     return re.sub(r"\n{3,}", "\n\n", t).strip()
 
 
+def release_titles():
+    """Títulos de filmes e séries que estão estreando (cinema e streaming, últimas 2 semanas), tirados das aspas
+    das manchetes do Google Notícias, os mais citados primeiro. Guardados por 3 horas."""
+    if _releases["titles"] and time.time() - _releases["at"] < RELEASES_EVERY:
+        return _releases["titles"]
+    from . import news
+    count = {}
+    for q in RELEASE_QUERIES:
+        url = ("https://news.google.com/rss/search?q=" + urllib.parse.quote(q + " when:14d")
+               + "&hl=pt-BR&gl=BR&ceid=BR:pt-419")
+        try:
+            raw = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}),
+                                         timeout=12).read()
+        except OSError as e:
+            log.info("Pudinho: lançamentos (%s): %s", q, e)
+            continue
+        for item in news.parse_rss(raw):
+            for title in RE_QUOTED.findall(item["title"]):
+                title = title.strip(" .,:;!?")
+                if title and len(title.split()) <= 8:
+                    key = fold(title)
+                    name, n = count.get(key, (title, 0))
+                    count[key] = (name, n + 1)
+    titles = [name for name, _n in sorted(count.values(), key=lambda x: -x[1])]
+    if titles:
+        _releases.update(at=time.time(), titles=titles)
+    return titles
+
+
 def _mentioned_first(answer, actions):
     """Botões dos títulos que a resposta citou primeiro; se citou 2 ou mais, só eles."""
     low = fold(answer)
@@ -112,6 +157,8 @@ class Brain(QObject):
         self._req = 0
         self._llm = None
         self._llm_lock = threading.Lock()
+        self._last = None        # última indicação: ("indicacao", texto) ou ("lancamentos", texto), para o "outras"
+        self._shown = set()      # títulos já indicados nela (não repetem no "Indicar outras opções")
         self._reply.connect(self.answered)
 
     # ---- pedido (chega na tarefa principal; a IA roda em outra)
@@ -121,6 +168,15 @@ class Brain(QObject):
         t = fold(text)
         action, arg = parse_command(text)
         try:
+            if self._last and RE_MORE.search(t):   # "indica outra coisa": mesmo pedido, sem repetir títulos
+                kind, first = self._last
+                question = f"{first} (quero outras opções, diferentes das que você já indicou)"
+                if kind == "lancamentos":
+                    return self._think(req, question, kind, "", [], prepare=lambda: self._release_info(more=True))
+                info, actions = self._pick_info(first, fold(first), more=True)
+                return self._think(req, question, kind, info, actions)
+            if RE_RELEASE.search(t) and not re.match(r"(como|onde|tem como|da pra|da para)\b", t):
+                return self._think(req, text, "lancamentos", "", [], prepare=self._release_info)
             sport = RE_SPORT.search(t) or action == "game"
             if RE_HELP.search(t) and not (sport and not re.match(r"(como|onde|tem como|da pra|da para)\b", t)):
                 return self._think(req, text, "ajuda", self._help_info(), [])
@@ -189,10 +245,12 @@ class Brain(QObject):
                     "guia de programação dos seus canais). Diga isso; não sugira outros jogos nem canais."), actions
         return "Jogos nos seus canais:\n" + "\n".join(lines), actions[:4]
 
-    def _pick_info(self, text, t):
+    def _pick_info(self, text, t, more=False):
         home = getattr(self.win, "home", None)
         if home is None or home.catalog is None:
-            return "A pessoa ainda não tem uma lista com filmes e séries no Pudim.", []
+            return "Você ainda não tem uma lista com filmes e séries no Pudim.", []
+        if not more:
+            self._last, self._shown = ("indicacao", text), set()
         entries, base = [], None
         m = RE_SIMILAR.search(t)
         if m:
@@ -210,9 +268,13 @@ class Brain(QObject):
                 found = home.catalog.search(query)
                 entries = found["titles"] + found["movies"]
         watched = {u for u, v in self.win.cfg["resume"].items() if v and v[0] == -1}
-        entries = [e for e in entries if isinstance(e, CatalogNode) or e.url not in watched][:MAX_OPTIONS]
+        entries = [e for e in entries if (isinstance(e, CatalogNode) or e.url not in watched)
+                   and id(e) not in self._shown][:MAX_OPTIONS]
         if not entries:
+            if more:
+                return "Já mostrei tudo o que achei no seu catálogo para esse pedido. Sugira pedir de outro jeito.", []
             return "Não achei nada parecido com esse pedido no seu catálogo.", []
+        self._shown.update(id(e) for e in entries)
         lines, actions = [], []
         for i, e in enumerate(entries, 1):
             info = home.info_of(e, fetch=False) or {}
@@ -228,17 +290,107 @@ class Brain(QObject):
                 if base is not None else "Opções do seu catálogo para esse pedido")
         return head + " (indique só destes):\n" + "\n".join(lines), actions
 
+    def _entry_lines(self, entries):
+        home = self.win.home
+        lines, actions = [], []
+        for e in entries:
+            info = home.info_of(e, fetch=False) or {}
+            title = display_title(e.label if isinstance(e, CatalogNode) else e.name)
+            kind = "série" if isinstance(e, CatalogNode) else "filme"
+            extra = ", ".join(x for x in (info.get("year", ""), info.get("genre", "")) if x)
+            plot = " ".join((info.get("plot") or "").split())[:200]
+            lines.append(f"- {title} ({kind}{', ' + extra if extra else ''}): {plot or 'sem sinopse'}")
+            actions.append((f"{'📺' if kind == 'série' else '🎬'} {title}", lambda e=e: self._open(e)))
+        return lines, actions
+
+    def _in_catalog(self, title):
+        """O filme/série com exatamente esse nome no catálogo (sem ligar para ano e qualidade), ou None."""
+        catalog = self.win.home.catalog
+        want = fold(title)
+        if len(want) < 3:
+            return None
+        found = catalog.search(title, limit=40)
+        for e in found["titles"] + found["movies"]:
+            name = fold(display_title(e.label if isinstance(e, CatalogNode) else e.name))
+            name = re.sub(r"\s*\b(19|20)\d\d\b.*$", "", name).strip()
+            if name == want:
+                return e
+        return None
+
+    def _release_info(self, more=False):
+        """(texto para a IA, botões): o que está estreando lá fora e já tem no catálogo. Roda fora da tela."""
+        home = getattr(self.win, "home", None)
+        if home is None or home.catalog is None:
+            return "Você ainda não tem uma lista com filmes e séries no Pudim.", []
+        if not more:
+            self._last, self._shown = ("lancamentos", "Quais lançamentos já tem no meu catálogo?"), set()
+        titles = release_titles()[:60]
+        have, missing = [], []
+        for rank, title in enumerate(titles):
+            e = self._in_catalog(title)
+            if e is None:
+                if rank < 15 and title[:1].isupper():   # só os mais citados: frases entre aspas não entram
+                    missing.append(title)
+                continue
+            if id(e) not in self._shown and e not in have:
+                have.append(e)
+            if len(have) >= MAX_OPTIONS:
+                break
+        parts, actions = [], []
+        if have:
+            lines, actions = self._entry_lines(have)
+            parts.append("Lançamentos e estreias em alta na internet (últimas 2 semanas) que JÁ estão no seu "
+                         "catálogo:\n" + "\n".join(lines))
+        if not titles:
+            parts.append("Não consegui ver os lançamentos na internet agora (sem conexão?).")
+        elif not have:
+            parts.append("Nenhum outro lançamento em alta na internet está no seu catálogo." if more else
+                         "Nenhum dos lançamentos em alta na internet chegou ao seu catálogo ainda.")
+        if missing and not more:
+            parts.append("Em alta na internet mas ainda não no catálogo (só cite o nome, sem detalhes): "
+                         + ", ".join(missing[:5]))
+        if len(have) < 3:   # completa com os mais novos que a lista da conta já tem
+            year = time.localtime().tm_year
+            node = home.catalog.node((MOVIES, "Lançamentos"))
+            fresh = []
+            if node:
+                for i in node.indices[:800]:
+                    ch = home.catalog.channels[i]
+                    m = re.search(r"\b(19|20)\d\d\b", ch.name)
+                    if m and int(m.group(0)) >= year - 1 and id(ch) not in self._shown and ch not in have:
+                        fresh.append(ch)
+                    if len(fresh) >= 4:
+                        break
+            if fresh:
+                lines, extra = self._entry_lines(fresh)
+                parts.append("Também chegaram há pouco no seu catálogo:\n" + "\n".join(lines))
+                actions += extra
+                have += fresh
+        self._shown.update(id(e) for e in have)
+        return "\n\n".join(parts), actions
+
     def _open(self, e):
         self.win.go_home()
         self.win.home.activate(e, None)
 
     # ---- resposta da IA
-    def _think(self, req, question, kind, info, actions):
-        threading.Thread(target=self._work, args=(req, question, kind, info, actions), name="pudinho",
+    def _think(self, req, question, kind, info, actions, prepare=None):
+        threading.Thread(target=self._work, args=(req, question, kind, info, actions, prepare), name="pudinho",
                          daemon=True).start()
 
-    def _work(self, req, question, kind, info, actions):
+    def _work(self, req, question, kind, info, actions, prepare=None):
+        if prepare is not None:   # informações que dependem da internet: buscadas aqui, fora da tela
+            try:
+                info, actions = prepare()
+            except Exception:  # noqa: BLE001
+                log.exception("Pudinho: preparando %s", kind)
+                info, actions = "Não consegui buscar essas informações agora.", []
         task = {
+            "lancamentos": "Conte quais lançamentos em alta na internet já estão no catálogo e indique 2 a 4 "
+                           "deles (ou dos que chegaram há pouco), escrevendo o nome exatamente como na lista e "
+                           "dizendo o porquê em poucas palavras. Só se as informações abaixo tiverem a parte \"ainda "
+                           "não no catálogo\", cite em uma frase até 3 desses nomes; senão não fale de títulos que "
+                           "faltam. Não escreva botões nem colchetes: o app mostra os botões sozinho.",
             "indicacao": "Indique 2 a 4 títulos da lista abaixo que combinem com o pedido, escrevendo o nome "
                          "exatamente como na lista e dizendo o porquê em poucas palavras. Não escreva botões nem "
                          "colchetes: o app mostra os botões sozinho.",
@@ -260,8 +412,10 @@ class Brain(QObject):
                 log.exception("Pudinho: IA")
         if not answer:
             answer = self._fallback(kind, info, actions)
-        elif kind == "indicacao":
+        elif kind in ("indicacao", "lancamentos"):
             actions = _mentioned_first(answer, actions)
+        if kind in ("indicacao", "lancamentos") and actions:
+            actions = list(actions) + [("🔄 Indicar outras opções", lambda: self.win.chat.ask(MORE_TEXT))]
         self.history += [("user", question), ("model", answer)]
         del self.history[:-HISTORY_TURNS * 2]
         self._reply.emit(req, answer, actions)
@@ -285,7 +439,7 @@ class Brain(QObject):
 
     @staticmethod
     def _fallback(kind, info, actions):
-        if kind == "indicacao":
+        if kind in ("indicacao", "lancamentos"):
             return "Separei estes do seu catálogo, é só clicar:" if actions else info
         if kind == "futebol":
             return info.replace("Jogos nos seus canais:\n", "").replace("- ", "")
@@ -298,7 +452,7 @@ class Brain(QObject):
 class ChatPanel(QFrame):
     """Painel lateral do chat."""
     SUGGESTIONS = ("Me indica um filme de suspense", "O Corinthians joga hoje?", "Como mando pra TV?",
-                   "Algo parecido com Breaking Bad")
+                   "Quais lançamentos já tem no meu catálogo?")
 
     def __init__(self, win):
         super().__init__(win, objectName="chatPanel")
