@@ -119,6 +119,20 @@ def split_cast(text):
     return [n.strip() for n in re.split(r"[,;/]", text or "") if len(n.strip()) > 1]
 
 
+_YT_ID = re.compile(r"(?:v=|youtu\.be/|embed/|shorts/)([A-Za-z0-9_-]{11})")
+
+
+def _trailer_id(v):
+    """A API manda o trailer como id do YouTube ("dQw4w9WgXcQ"), link completo, ou vazio."""
+    v = str(v or "").strip()
+    if not v:
+        return ""
+    m = _YT_ID.search(v)
+    if m:
+        return m.group(1)
+    return v if re.fullmatch(r"[A-Za-z0-9_-]{11}", v) else ""
+
+
 def _first_url(v):
     """backdrop_path vem como lista, texto de lista ou texto simples."""
     if isinstance(v, list):
@@ -150,6 +164,7 @@ def _clean(d):
         "duration": (d.get("duration") or "").strip(),
         "cover": d.get("cover") or d.get("cover_big") or d.get("movie_image") or "",
         "backdrop": _first_url(d.get("backdrop_path")),
+        "trailer": _trailer_id(d.get("youtube_trailer") or d.get("trailer")),
     }
 
 

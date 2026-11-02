@@ -865,8 +865,11 @@ class SeriesView(QWidget):
                                 text="  Minha lista", icon_size=18)
         self.dl_btn = make_btn("download", "Baixar para assistir sem internet", self._toggle_download, kind="ghost",
                                text="  Baixar", icon_size=18)
+        self.trailer_btn = make_btn("film", "Ver o trailer", self._play_trailer, kind="ghost",
+                                    text="  Trailer", icon_size=18)
         btns.addWidget(self.play_btn)
         btns.addWidget(self.restart_btn)
+        btns.addWidget(self.trailer_btn)
         btns.addWidget(self.fav_btn)
         btns.addWidget(self.dl_btn)
         btns.addStretch(1)
@@ -1077,6 +1080,23 @@ class SeriesView(QWidget):
     def _play_restart(self):
         if self.movie is not None and not self._just_opened():
             self.page.play_movie(self.movie, self.movie_ctx, from_start=True)
+
+    def _play_trailer(self):
+        """Abre o trailer numa janelinha por cima, para ajudar a escolher o filme/série."""
+        if self._just_opened():
+            return
+        page = self.page
+        if self.movie is not None:
+            info = page.meta.movie_info(self.movie) or {}
+            title = display_title(self.movie.name)
+            year = info.get("year") or (str(cat.year_of(self.movie.name)) if cat.year_of(self.movie.name) else "")
+        elif self.node is not None:
+            info = page.meta.series_info(self.node.label) or {}
+            title = display_title(self.node.label)
+            year = info.get("year", "")
+        else:
+            return
+        page.win.show_trailer(title, year, info.get("trailer", ""))
 
     def _play_episode(self, ch):
         if self._just_opened():

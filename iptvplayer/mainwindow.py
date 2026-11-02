@@ -49,6 +49,7 @@ from .m3u import Channel, header_epg_urls, is_brazilian, parse_m3u
 from .mosaic import MosaicWindow
 from .net import BACKUP_FILE, ListDownloader, LogoLoader, Scanner, make_request
 from .pip import PipWindow
+from .trailer import TrailerWindow
 from .recorder import Recorder, clip_path, snapshot_path
 from .offline import OfflineLibrary
 from .paths import CACHE
@@ -201,6 +202,7 @@ class MainWindow(QMainWindow):
         self.instance = vlc.Instance(["--no-video-title-show", "--network-caching=1500", "--quiet",
                                       "--sub-source=marq"])
         self.player = self.instance.media_player_new()
+        self._trailer = None     # janela do trailer (criada quando pedem a primeira vez)
         self.recorder = Recorder(self.instance)
         self.tvcast = TvCast(self.cfg, self)    # "Mandar pra TV": o canal passa na TV Samsung pela rede de casa
         self.tvcast.status.connect(self._on_tvcast_status)
@@ -3306,6 +3308,12 @@ class MainWindow(QMainWindow):
         self._replay()
         self._update_now_info()
         self.hide()
+
+    def show_trailer(self, title, year="", trailer_id=""):
+        """Abre a janelinha do trailer por cima da página do filme (player próprio)."""
+        if self._trailer is None:
+            self._trailer = TrailerWindow(self.instance)
+        self._trailer.open(title, year, trailer_id)
 
     def exit_pip(self, stop=False):
         pip, self.pip = self.pip, None

@@ -67,6 +67,76 @@ def resolve(url):
     return manifest
 
 
+class TrailerError(Exception):
+    pass
+
+
+def resolve_trailer(trailer_id="", title="", year=""):
+    """Endereço tocável do trailer. Usa o id do YouTube que a conta mandou; se não houver,
+    procura no YouTube pelo nome do filme. Devolve (endereço, título do vídeo, link da página)."""
+    try:
+        import yt_dlp
+    except ImportError:
+        raise TrailerError("esta versão não abre trailers (falta o yt-dlp)") from None
+    if trailer_id:
+        target = f"https://www.youtube.com/watch?v={trailer_id}"
+    elif title:
+        termo = f"{title} {year} trailer".strip()
+        target = f"ytsearch1:{termo} oficial"
+    else:
+        raise TrailerError("sem trailer para este título")
+    # Sem pedir um formato: o YouTube moderno manda vídeo e áudio separados (precisariam do ffmpeg).
+    # O VLC toca sozinho o manifesto HLS/DASH, que já traz imagem e som juntos.
+    opts = {"quiet": True, "no_warnings": True, "noplaylist": True, "skip_download": True,
+            "logger": _Mute()}
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(target, download=False, process=False)
+            if "entries" in info:   # resultado de busca ou /live: resolve o primeiro de verdade
+                first = next((x for x in info["entries"] if x), None)
+                if not first:
+                    raise TrailerError("não achei um trailer para este filme")
+                info = ydl.extract_info(first.get("url") or first.get("id"),
+                                        download=False, process=True)
+    except TrailerError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise TrailerError(re.sub(r"^ERROR:\s*(\[[^\]]+\]\s*)*", "", str(e))[:120]) from None
+    url = _playable_format(info.get("formats") or [])
+    if not url:
+        raise TrailerError("o YouTube não entregou o vídeo")
+    return url, info.get("title") or title, info.get("webpage_url") or target
+
+
+def _playable_format(formats):
+    """O melhor jeito do VLC tocar sem ffmpeg: 1) formato já com vídeo+áudio; 2) o manifesto HLS/DASH."""
+    muxed = [f for f in formats if f.get("acodec") not in (None, "none")
+             and f.get("vcodec") not in (None, "none") and f.get("url")]
+    if muxed:
+        muxed.sort(key=lambda f: f.get("height") or 0)
+        pick = next((f for f in muxed if (f.get("height") or 0) <= 720), muxed[-1])
+        return pick["url"]
+    return next((f["manifest_url"] for f in formats if f.get("manifest_url")), None)
+
+
+class TrailerResolver(QObject):
+    """Resolve o trailer em segundo plano (leva uns 2-4 s) e avisa a janela."""
+    resolved = pyqtSignal(object, str, str, str)   # chave, endereço, título do vídeo, link da página
+    failed = pyqtSignal(object, str)               # chave, motivo
+
+    def start(self, key, trailer_id="", title="", year=""):
+        threading.Thread(target=self._work, args=(key, trailer_id, title, year),
+                         daemon=True, name="trailer").start()
+
+    def _work(self, key, trailer_id, title, year):
+        try:
+            url, vtitle, page = resolve_trailer(trailer_id, title, year)
+            self.resolved.emit(key, url, vtitle, page)
+        except TrailerError as e:
+            log.info("Trailer: %s (%s / %s)", e, trailer_id, title)
+            self.failed.emit(key, str(e))
+
+
 class Resolver(QObject):
     """Resolve em segundo plano (leva uns 2-3 s) e avisa a janela."""
     resolved = pyqtSignal(str, str)   # link do YouTube, endereço do vídeo
