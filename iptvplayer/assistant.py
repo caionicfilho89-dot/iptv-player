@@ -419,7 +419,7 @@ class ChatPanel(QFrame):
         for label, fn in actions:
             btn = QPushButton(label, objectName="chatChip" if chips else "chatAction")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.clicked.connect(fn)
+            btn.clicked.connect(lambda _checked=False, f=fn: f())   # o clicked manda "checked": não passa adiante
             lay.addWidget(btn)
         self._add(box, "left")
 
