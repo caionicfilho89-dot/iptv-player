@@ -9,7 +9,9 @@ navegador nem de permissão na TV.
 - canal em HLS (.m3u8): o PC junta os pedaços .ts num fluxo contínuo."""
 import re
 import secrets
+import shutil
 import socket
+import subprocess
 import threading
 import time
 import urllib.parse
@@ -30,6 +32,14 @@ DLNA_LIVE = "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000
 BUSY_TRIES = 6              # o servidor ainda conta a conexão que o PC acabou de largar por alguns segundos
 RESUME_TRIES = 8            # o servidor da conta engasgou no meio: reconecta do ponto onde parou, sem a TV perceber
 READ_TIMEOUT = 12           # segundos sem chegar nada do servidor = conexão travada
+CREATE_NO_WINDOW = 0x08000000   # Windows: não pisca janela de console ao rodar o ffmpeg
+
+# Modo madrugada na TV: a TV decodifica o som sozinha, então o compressor do VLC do PC não a alcança.
+# Só pra filme/episódio e só com o modo madrugada ligado, o PC transcodifica o ÁUDIO antes de repassar
+# (o vídeo é copiado, sem recodificar — CPU baixa). O mesmo efeito do modo madrugada: levanta os diálogos
+# baixos (acompressor) e segura os estouros (alimiter). Sem ffmpeg, repassa normal (sem o efeito).
+NIGHT_AF = ("acompressor=threshold=-27dB:ratio=6:attack=20:release=250:makeup=6,"
+            "alimiter=level_in=1:limit=0.9:attack=5:release=50")
 
 
 def ip_towards(target, port=80):
@@ -110,12 +120,14 @@ def _kind(url):
 class Relay:
     """Servidor no PC que a TV acessa: repassa a fonte atual (uma conexão por vez com o servidor)."""
 
-    def __init__(self):
+    def __init__(self, cfg=None):
+        self.cfg = cfg
         self.http = requests.Session()
         self.http.headers["User-Agent"] = UA
         self.lock = threading.Lock()
-        self.src = None       # {"url", "kind", "edge", "size", "token", "headers"}
+        self.src = None       # {"url", "kind", "edge", "size", "token", "headers", "ff", "dur"}
         self.upstream = None
+        self.proc = None      # ffmpeg do modo madrugada na TV (quando "ff" está no src)
         relay = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -158,16 +170,9 @@ class Relay:
                     return
                 if src["kind"] == "hls":
                     return relay.serve_hls(self, src)
-                rng = self.headers.get("Range")
-                up = relay.open_upstream(src, rng)
-                if up is None:
-                    self.send_response(503)
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                    return
-                self.send_response(up.status_code)
-                self._headers(src, [(k, up.headers[k]) for k in ("Content-Length", "Content-Range") if up.headers.get(k)])
-                relay.pump(self, src, up, rng)
+                if src["kind"] == "file" and src.get("ff"):   # modo madrugada: transcodifica o áudio
+                    return relay.serve_transcode(self, src)
+                relay.serve_raw(self, src, self.headers.get("Range"))
 
         self.server = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
         self.server.daemon_threads = True
@@ -188,6 +193,12 @@ class Relay:
             if r is not None:
                 src["size"] = int(r.headers.get("Content-Range", "/0").split("/")[-1] or 0)
                 r.close()
+            if self.cfg is not None and self.cfg["night_audio"]:
+                ff = shutil.which("ffmpeg")
+                if ff:   # modo madrugada: transcodifica o áudio; sonda a duração pro seek aproximado
+                    src["ff"] = ff
+                    src["dur"] = self._probe_duration(src["edge"], headers)
+                    log.info("TV: modo madrugada ligado — transcodificando o áudio (ffmpeg)")
         with self.lock:
             self._close_upstream()
             self.src = src
@@ -197,6 +208,7 @@ class Relay:
     def clear(self):
         with self.lock:
             self._close_upstream()
+            self._kill_proc()
             self.src = None
 
     def _close_upstream(self):
@@ -206,6 +218,31 @@ class Relay:
             except Exception:  # noqa: BLE001
                 pass
             self.upstream = None
+
+    def _kill_proc(self):
+        if self.proc is not None:
+            try:
+                self.proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+            self.proc = None
+
+    def _probe_duration(self, url, headers):
+        """Duração do vídeo em segundos (ffprobe), ou 0 se não der — aí o seek na TV fica desligado."""
+        ff = shutil.which("ffprobe")
+        if not ff:
+            return 0.0
+        cmd = [ff, "-v", "error", "-user_agent", UA]
+        ref = (headers or {}).get("Referer")
+        if ref:
+            cmd += ["-headers", f"Referer: {ref}\r\n"]
+        cmd += ["-show_entries", "format=duration", "-of", "default=nk=1:nw=1", url]
+        try:
+            out = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 timeout=20, creationflags=CREATE_NO_WINDOW).stdout.decode("ascii", "ignore")
+            return float(out.strip() or 0)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return 0.0
 
     def _get(self, url, extra=None, stream=True, allow_redirects=True):
         for _ in range(BUSY_TRIES):
@@ -281,6 +318,94 @@ class Relay:
                 log.warning("TV: o servidor não continuou do ponto (%s)", new.status_code)
                 return
             up = new
+
+    def serve_raw(self, handler, src, rng):
+        """Repasse direto (sem mexer no áudio): canais ao vivo e filmes fora do modo madrugada."""
+        up = self.open_upstream(src, rng)
+        if up is None:
+            handler.send_response(503)
+            handler.send_header("Content-Length", "0")
+            handler.end_headers()
+            return
+        handler.send_response(up.status_code)
+        handler._headers(src, [(k, up.headers[k]) for k in ("Content-Length", "Content-Range") if up.headers.get(k)])
+        self.pump(handler, src, up, rng)
+
+    def open_transcode(self, src, start_sec):
+        """Sobe um ffmpeg que lê o filme a partir de start_sec, copia o vídeo e recomprime só o áudio.
+        A nova conexão (seek) substitui a anterior, como no open_upstream. Devolve o processo ou None."""
+        cmd = [src["ff"], "-hide_banner", "-loglevel", "error", "-nostdin", "-user_agent", UA]
+        ref = (src.get("headers") or {}).get("Referer")
+        if ref:
+            cmd += ["-headers", f"Referer: {ref}\r\n"]
+        if start_sec and start_sec > 1:
+            cmd += ["-ss", f"{start_sec:.3f}"]   # seek na entrada (rápido): pula sem recodificar vídeo
+        cmd += ["-i", src["edge"], "-map", "0:v:0?", "-map", "0:a:0?",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-af", NIGHT_AF,
+                # mp4 fragmentado: dá para transmitir sem conhecer o fim (casa com o video/mp4 do DIDL)
+                "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+        with self.lock:
+            self._kill_proc()
+            try:
+                p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                     creationflags=CREATE_NO_WINDOW)
+            except OSError as e:
+                log.warning("TV: ffmpeg não subiu (%s) — repassando sem o modo madrugada", e)
+                return None
+            self.proc = p
+            return p
+
+    def serve_transcode(self, handler, src):
+        """Modo madrugada na TV: entrega o filme com o áudio já recomprimido. O seek por byte que a TV pede
+        é convertido em tempo (proporcional ao tamanho) e vira um -ss no ffmpeg. Se o ffmpeg não subir,
+        cai no repasse normal para o filme não quebrar."""
+        size, dur = src.get("size") or 0, src.get("dur") or 0
+        rng = handler.headers.get("Range")
+        start = 0
+        m = re.match(r"bytes=(\d+)-", rng or "")
+        if m:
+            start = int(m.group(1))
+        seekable = bool(size and dur)
+        t = (start / size) * dur if (seekable and start) else 0.0
+        proc = self.open_transcode(src, t)
+        if proc is None:
+            return self.serve_raw(handler, src, rng)   # plano B: repassa sem o efeito
+        if seekable and start:
+            handler.send_response(206)
+            extra = [("Content-Range", f"bytes {start}-{size - 1}/{size}"), ("Content-Length", str(size - start))]
+        else:
+            handler.send_response(200)
+            extra = [("Content-Length", str(size))] if size else []
+        handler.send_header("Content-Type", "video/mp4")
+        handler.send_header("transferMode.dlna.org", "Streaming")
+        handler.send_header("contentFeatures.dlna.org", DLNA_VOD)
+        if seekable:
+            handler.send_header("Accept-Ranges", "bytes")
+        for k, v in extra:
+            handler.send_header(k, v)
+        handler.end_headers()
+        self.pump_transcode(handler, src, proc)
+
+    def pump_transcode(self, handler, src, proc):
+        """Repassa a saída do ffmpeg para a TV. Para quando a TV fecha (parou ou pulou de ponto) ou quando
+        outra conexão/seek substitui este processo."""
+        try:
+            while self.src is src and self.proc is proc:
+                chunk = proc.stdout.read(65536)
+                if not chunk:
+                    break   # ffmpeg terminou (fim do filme) ou foi encerrado por um seek
+                try:
+                    handler.wfile.write(chunk)
+                except OSError:
+                    break   # a TV fechou a conexão
+        finally:
+            try:
+                proc.stdout.close()
+            except Exception:  # noqa: BLE001
+                pass
+            with self.lock:
+                if self.proc is proc:
+                    self._kill_proc()
 
     def serve_hls(self, handler, src):
         """Canal HLS: baixa a lista e os pedaços .ts e manda tudo num fluxo contínuo."""
@@ -406,7 +531,7 @@ class TvCast(QObject):
             if not ctrl:
                 raise OSError("não achei a TV na rede. Ela está ligada e na mesma rede do PC?")
             if self.relay is None:
-                self.relay = Relay()
+                self.relay = Relay(self.cfg)
             path, kind = self.relay.set_source(url, headers)
             host = urllib.parse.urlsplit(ctrl).hostname
             link = f"http://{ip_towards(host, 9197)}:{self.relay.port}{path}"

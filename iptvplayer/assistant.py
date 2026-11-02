@@ -685,9 +685,13 @@ class Brain(QObject):
                            "dizendo o porquê em poucas palavras. Só se as informações abaixo tiverem a parte \"ainda "
                            "não no catálogo\", cite em uma frase até 3 desses nomes; senão não fale de títulos que "
                            "faltam. Não escreva botões nem colchetes: o app mostra os botões sozinho.",
-            "indicacao": "Indique 2 a 4 títulos da lista abaixo que combinem com o pedido, escrevendo o nome "
-                         "exatamente como na lista e dizendo o porquê em poucas palavras. Não escreva botões nem "
-                         "colchetes: o app mostra os botões sozinho.",
+            "indicacao": "Indique de 3 a 5 títulos da lista abaixo que combinem com o pedido, escrevendo o nome "
+                         "exatamente como na lista. Para CADA um, escreva 1 ou 2 frases animadas dizendo por que "
+                         "combina — o clima, o gênero e o que o torna uma boa pedida — de um jeito que dê vontade de "
+                         "assistir, SEM spoilers. Comece com uma frase curta e simpática. NÃO termine se desculpando "
+                         "nem diga que não tem mais opções: termine convidando a pessoa a pedir mais sugestões ou a "
+                         "contar um pouco mais do que ela curte. Não escreva botões nem colchetes: o app mostra os "
+                         "botões sozinho.",
             "tempo": "A pessoa disse quanto tempo tem. Indique 2 a 4 títulos da lista abaixo que caibam nesse "
                      "tempo, escrevendo o nome exatamente como na lista e dizendo a duração de cada um e o porquê "
                      "em poucas palavras. Não escreva botões nem colchetes: o app mostra os botões sozinho.",

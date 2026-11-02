@@ -122,6 +122,12 @@ class Config:
     def __setitem__(self, k, v):
         self.data[k] = v
 
+    def get(self, k, default=None):
+        return self.data.get(k, default)
+
+    def __contains__(self, k):
+        return k in self.data
+
     def save(self):
         try:
             tmp = CONFIG_FILE.with_suffix(".tmp")

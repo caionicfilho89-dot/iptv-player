@@ -86,10 +86,13 @@ COMPACT_BELOW = 1080         # largura da janela abaixo da qual a barra lateral 
 LABEL_ROLE = Qt.ItemDataRole.UserRole + 1
 THEME_PREFIX = "tema:"       # categorias montadas pela tela Início (um tema com canais de todas as listas)
 BRASIL_ROW = THEME_PREFIX + "brasil"
-# modo madrugada: compressor de dinâmica do VLC — levanta os diálogos baixos e segura os estouros
-NIGHT_AUDIO_OPTS = (":audio-filter=compressor", ":compressor-threshold=-24", ":compressor-ratio=4.0",
-                    ":compressor-makeup-gain=8.0", ":compressor-attack=25.0", ":compressor-release=250.0",
-                    ":compressor-knee=2.0")
+# modo madrugada: compressor de dinâmica + normalizador de volume do VLC.
+# o compressor levanta os diálogos baixos; o normvol segura os estouros (explosões, trilha alta) pra
+# ninguém levar susto de madrugada. mais agressivo que antes pra realmente dar pra notar.
+NIGHT_AUDIO_OPTS = (":audio-filter=compressor:normvol",
+                    ":compressor-threshold=-30.0", ":compressor-ratio=8.0", ":compressor-makeup-gain=12.0",
+                    ":compressor-attack=20.0", ":compressor-release=250.0", ":compressor-knee=2.5",
+                    ":norm-buff-size=20", ":norm-max-level=1.6")
 
 
 def fold(text):
@@ -4032,7 +4035,11 @@ class MainWindow(QMainWindow):
         self._info("🌙 Modo madrugada ligado: diálogos mais nítidos, sem sustos de volume."
                    if on else "Modo madrugada desligado.", 6)
         if self.tvcast.active:
-            return   # o som sai pela TV; vale no próximo que você tocar no PC
+            # na TV o som é recomprimido pelo PC antes de repassar (precisa do ffmpeg); para não cortar
+            # o filme de agora, só vale no próximo que você mandar para a TV.
+            self._info("🌙 Na TV, o modo madrugada entra no próximo filme que você mandar (o de agora continua)."
+                       if on else "Modo madrugada desligado para o próximo filme na TV.", 7)
+            return
         if self.vod and self.confirmed and not self.vod["ended"]:
             pos = max(0.0, self.player.get_time() / 1000)
             self.play_ondemand(self.current, self.vod["url"], self.vod["info"], start=pos,
