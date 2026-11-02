@@ -29,6 +29,8 @@ SSDP_ST = "urn:schemas-upnp-org:service:AVTransport:1"
 RENDERING = "urn:schemas-upnp-org:service:RenderingControl:1"
 DLNA_VOD = "DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
 DLNA_LIVE = "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
+# stream transcodificado (modo madrugada na TV): "convertido" (CI=1), sem seek por byte (OP=00) — é assim que a Samsung aceita
+DLNA_CONV = "DLNA.ORG_OP=00;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=01700000000000000000000000000000"
 BUSY_TRIES = 6              # o servidor ainda conta a conexão que o PC acabou de largar por alguns segundos
 RESUME_TRIES = 8            # o servidor da conta engasgou no meio: reconecta do ponto onde parou, sem a TV perceber
 READ_TIMEOUT = 12           # segundos sem chegar nada do servidor = conexão travada
@@ -193,12 +195,11 @@ class Relay:
             if r is not None:
                 src["size"] = int(r.headers.get("Content-Range", "/0").split("/")[-1] or 0)
                 r.close()
-            if self.cfg is not None and self.cfg.get("night_audio_tv") and self.cfg.get("night_audio"):
+            if self.cfg is not None and self.cfg.get("night_audio"):
                 ff = shutil.which("ffmpeg")
-                if ff:   # modo madrugada na TV (experimental): transcodifica o áudio; sonda a duração pro seek
+                if ff:   # modo madrugada na TV: transcodifica o áudio (MPEG-TS convertido); se a TV recusar, _work faz fallback
                     src["ff"] = ff
-                    src["dur"] = self._probe_duration(src["edge"], headers)
-                    log.info("TV: modo madrugada ligado — transcodificando o áudio (ffmpeg)")
+                    log.info("TV: modo madrugada ligado — transcodificando o áudio (ffmpeg, MPEG-TS)")
         with self.lock:
             self._close_upstream()
             self.src = src
@@ -342,8 +343,9 @@ class Relay:
             cmd += ["-ss", f"{start_sec:.3f}"]   # seek na entrada (rápido): pula sem recodificar vídeo
         cmd += ["-i", src["edge"], "-map", "0:v:0?", "-map", "0:a:0?",
                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-af", NIGHT_AF,
-                # mp4 fragmentado: dá para transmitir sem conhecer o fim (casa com o video/mp4 do DIDL)
-                "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+                # MPEG-TS: fluxo contínuo que a Samsung aceita como stream convertido (o ffmpeg já põe o
+                # h264_mp4toannexb sozinho ao mandar p/ mpegts)
+                "-f", "mpegts", "pipe:1"]
         with self.lock:
             self._kill_proc()
             try:
@@ -356,33 +358,17 @@ class Relay:
             return p
 
     def serve_transcode(self, handler, src):
-        """Modo madrugada na TV: entrega o filme com o áudio já recomprimido. O seek por byte que a TV pede
-        é convertido em tempo (proporcional ao tamanho) e vira um -ss no ffmpeg. Se o ffmpeg não subir,
-        cai no repasse normal para o filme não quebrar."""
-        size, dur = src.get("size") or 0, src.get("dur") or 0
-        rng = handler.headers.get("Range")
-        start = 0
-        m = re.match(r"bytes=(\d+)-", rng or "")
-        if m:
-            start = int(m.group(1))
-        seekable = bool(size and dur)
-        t = (start / size) * dur if (seekable and start) else 0.0
-        proc = self.open_transcode(src, t)
+        """Modo madrugada na TV: entrega o filme como MPEG-TS contínuo com o áudio recomprimido — um stream
+        "convertido" (DLNA CI=1, sem seek por byte), que a Samsung aceita. Começa do ponto src["start"]
+        (retomar de onde parou). Se o ffmpeg não subir, cai no repasse normal para o filme não quebrar."""
+        proc = self.open_transcode(src, src.get("start", 0))
         if proc is None:
-            return self.serve_raw(handler, src, rng)   # plano B: repassa sem o efeito
-        if seekable and start:
-            handler.send_response(206)
-            extra = [("Content-Range", f"bytes {start}-{size - 1}/{size}"), ("Content-Length", str(size - start))]
-        else:
-            handler.send_response(200)
-            extra = [("Content-Length", str(size))] if size else []
-        handler.send_header("Content-Type", "video/mp4")
+            return self.serve_raw(handler, src, handler.headers.get("Range"))   # plano B: repassa sem o efeito
+        handler.send_response(200)
+        handler.send_header("Content-Type", "video/mpeg")
         handler.send_header("transferMode.dlna.org", "Streaming")
-        handler.send_header("contentFeatures.dlna.org", DLNA_VOD)
-        if seekable:
-            handler.send_header("Accept-Ranges", "bytes")
-        for k, v in extra:
-            handler.send_header(k, v)
+        handler.send_header("contentFeatures.dlna.org", DLNA_CONV)
+        handler.send_header("Connection", "close")
         handler.end_headers()
         self.pump_transcode(handler, src, proc)
 
@@ -536,30 +522,52 @@ class TvCast(QObject):
             host = urllib.parse.urlsplit(ctrl).hostname
             link = f"http://{ip_towards(host, 9197)}:{self.relay.port}{path}"
             vod = kind == "file"
-            mime = "video/mp4" if vod else "video/mp2t"
-            didl = ('<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
-                    'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">'
-                    f'<item id="1" parentID="0" restricted="1"><dc:title>{escape(name)}</dc:title>'
-                    f'<upnp:class>object.item.videoItem{".movie" if vod else ".videoBroadcast"}</upnp:class>'
-                    f'<res protocolInfo="http-get:*:{mime}:{DLNA_VOD if vod else DLNA_LIVE}">{escape(link)}</res>'
-                    '</item></DIDL-Lite>')
-            soap(ctrl, "Stop", timeout=8)
-            code, body = soap(ctrl, "SetAVTransportURI",
-                              f"<CurrentURI>{escape(link)}</CurrentURI><CurrentURIMetaData>{escape(didl)}</CurrentURIMetaData>")
-            if code != 200:
-                raise OSError(f"a TV recusou o vídeo ({_upnp_error(body)})")
-            time.sleep(1.5)
-            soap(ctrl, "Play", "<Speed>1</Speed>")
-            for _ in range(40):   # até 20 s para a TV começar
-                if job != self._job:
+            transcode = bool(self.relay.src and self.relay.src.get("ff"))
+            if transcode and position > 5:
+                self.relay.src["start"] = position   # o ffmpeg retoma do ponto (-ss), já que o TS não tem seek
+
+            def try_play(conv):
+                """Manda a URI para a TV e espera até 20 s começar. 'ok' / 'timeout' / 'cancel'."""
+                if vod:
+                    mime, flags, cls = ("video/mpeg", DLNA_CONV, ".movie") if conv else ("video/mp4", DLNA_VOD, ".movie")
+                else:
+                    mime, flags, cls = "video/mp2t", DLNA_LIVE, ".videoBroadcast"
+                didl = ('<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
+                        'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">'
+                        f'<item id="1" parentID="0" restricted="1"><dc:title>{escape(name)}</dc:title>'
+                        f'<upnp:class>object.item.videoItem{cls}</upnp:class>'
+                        f'<res protocolInfo="http-get:*:{mime}:{flags}">{escape(link)}</res>'
+                        '</item></DIDL-Lite>')
+                soap(ctrl, "Stop", timeout=8)
+                code, body = soap(ctrl, "SetAVTransportURI",
+                                  f"<CurrentURI>{escape(link)}</CurrentURI><CurrentURIMetaData>{escape(didl)}</CurrentURIMetaData>")
+                if code != 200:
+                    raise OSError(f"a TV recusou o vídeo ({_upnp_error(body)})")
+                time.sleep(1.5)
+                soap(ctrl, "Play", "<Speed>1</Speed>")
+                for _ in range(40):   # até 20 s para a TV começar
+                    if job != self._job:
+                        return "cancel"
+                    state = re.findall(r"<CurrentTransportState>(\w+)", soap(ctrl, "GetTransportInfo", timeout=6)[1])
+                    if state == ["PLAYING"]:
+                        return "ok"
+                    time.sleep(0.5)
+                return "timeout"
+
+            res = try_play(transcode)
+            if res == "cancel":
+                return
+            if res == "timeout" and transcode:   # a TV não aceitou o áudio transcodificado: repassa direto
+                log.warning("TV: a TV não aceitou o modo madrugada (áudio transcodificado); repassando sem ele")
+                self.relay.src.pop("ff", None)
+                self.relay._kill_proc()
+                transcode = False
+                res = try_play(False)
+                if res == "cancel":
                     return
-                state = re.findall(r"<CurrentTransportState>(\w+)", soap(ctrl, "GetTransportInfo", timeout=6)[1])
-                if state == ["PLAYING"]:
-                    break
-                time.sleep(0.5)
-            else:
+            if res != "ok":
                 raise OSError("a TV não começou a tocar (ela mostrou alguma mensagem?)")
-            if vod and position > 5:
+            if vod and position > 5 and not transcode:   # no transcode o -ss já começou do ponto
                 soap(ctrl, "Seek", f"<Unit>REL_TIME</Unit><Target>{time.strftime('%H:%M:%S', time.gmtime(position))}</Target>")
             vol = re.findall(r"<CurrentVolume>(\d+)", soap(ctrl.replace("AVTransport", "RenderingControl"), "GetVolume",
                              "<Channel>Master</Channel>", timeout=5, service=RENDERING)[1])
