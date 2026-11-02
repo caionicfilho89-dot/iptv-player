@@ -286,7 +286,7 @@ class Brain(QObject):
             plot = " ".join((info.get("plot") or "").split())[:220]
             lines.append(f"{i}. {title} ({kind}{', ' + extra if extra else ''}): {plot or 'sem sinopse'}")
             icon = "📺" if kind == "série" else "🎬"
-            actions.append((f"{icon} {title}", lambda e=e: self._open(e)))
+            actions.append((f"{icon} {title}", lambda e=e: self.win.compare.add(e)))
         head = (f"Parecidos com {display_title(base.label if isinstance(base, CatalogNode) else base.name)}"
                 if base is not None else "Opções do seu catálogo para esse pedido")
         return head + " (indique só destes):\n" + "\n".join(lines), actions
@@ -301,7 +301,7 @@ class Brain(QObject):
             extra = ", ".join(x for x in (info.get("year", ""), info.get("genre", "")) if x)
             plot = " ".join((info.get("plot") or "").split())[:200]
             lines.append(f"- {title} ({kind}{', ' + extra if extra else ''}): {plot or 'sem sinopse'}")
-            actions.append((f"{'📺' if kind == 'série' else '🎬'} {title}", lambda e=e: self._open(e)))
+            actions.append((f"{'📺' if kind == 'série' else '🎬'} {title}", lambda e=e: self.win.compare.add(e)))
         return lines, actions
 
     def _in_catalog(self, title):
