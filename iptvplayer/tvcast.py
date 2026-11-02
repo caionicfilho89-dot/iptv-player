@@ -195,9 +195,12 @@ class Relay:
             if r is not None:
                 src["size"] = int(r.headers.get("Content-Range", "/0").split("/")[-1] or 0)
                 r.close()
-            if self.cfg is not None and self.cfg.get("night_audio"):
+            # Modo madrugada na TV: desligado por padrão (a Samsung do Caio recusa stream transcodificado via
+            # DLNA — fmp4 e mpegts — e a tentativa só atrasa o cast ~20s antes do fallback). Fica atrás da
+            # chave night_audio_tv (experimental) para quem tiver uma TV que aceite; _work faz fallback mesmo assim.
+            if self.cfg is not None and self.cfg.get("night_audio_tv") and self.cfg.get("night_audio"):
                 ff = shutil.which("ffmpeg")
-                if ff:   # modo madrugada na TV: transcodifica o áudio (MPEG-TS convertido); se a TV recusar, _work faz fallback
+                if ff:
                     src["ff"] = ff
                     log.info("TV: modo madrugada ligado — transcodificando o áudio (ffmpeg, MPEG-TS)")
         with self.lock:
