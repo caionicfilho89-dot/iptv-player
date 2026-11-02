@@ -28,6 +28,8 @@ RENDERING = "urn:schemas-upnp-org:service:RenderingControl:1"
 DLNA_VOD = "DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
 DLNA_LIVE = "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
 BUSY_TRIES = 6              # o servidor ainda conta a conexão que o PC acabou de largar por alguns segundos
+RESUME_TRIES = 8            # o servidor da conta engasgou no meio: reconecta do ponto onde parou, sem a TV perceber
+READ_TIMEOUT = 12           # segundos sem chegar nada do servidor = conexão travada
 
 
 def ip_towards(target, port=80):
@@ -156,7 +158,8 @@ class Relay:
                     return
                 if src["kind"] == "hls":
                     return relay.serve_hls(self, src)
-                up = relay.open_upstream(src, self.headers.get("Range"))
+                rng = self.headers.get("Range")
+                up = relay.open_upstream(src, rng)
                 if up is None:
                     self.send_response(503)
                     self.send_header("Content-Length", "0")
@@ -164,13 +167,7 @@ class Relay:
                     return
                 self.send_response(up.status_code)
                 self._headers(src, [(k, up.headers[k]) for k in ("Content-Length", "Content-Range") if up.headers.get(k)])
-                try:
-                    for chunk in up.iter_content(65536):
-                        self.wfile.write(chunk)
-                except Exception:  # noqa: BLE001 - a TV fechou (pulou para outro ponto ou parou)
-                    pass
-                finally:
-                    up.close()
+                relay.pump(self, src, up, rng)
 
         self.server = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
         self.server.daemon_threads = True
@@ -213,7 +210,8 @@ class Relay:
     def _get(self, url, extra=None, stream=True, allow_redirects=True):
         for _ in range(BUSY_TRIES):
             try:
-                r = self.http.get(url, headers=extra or {}, stream=stream, timeout=20, allow_redirects=allow_redirects)
+                r = self.http.get(url, headers=extra or {}, stream=stream, timeout=(10, READ_TIMEOUT),
+                                  allow_redirects=allow_redirects)
             except requests.RequestException:
                 time.sleep(2)
                 continue
@@ -227,8 +225,62 @@ class Relay:
         with self.lock:   # a TV abre conexões novas ao pular de ponto: a nova substitui a anterior
             self._close_upstream()
             r = self._get(src["edge"], extra={"Range": rng} if rng else None)
+            if r is None and src["kind"] == "file":   # o link com token pode ter vencido: pede outro à conta
+                edge = self._resolve(src["url"])
+                if edge:
+                    src["edge"] = edge
+                    r = self._get(edge, extra={"Range": rng} if rng else None)
             self.upstream = r
             return r
+
+    def _resolve(self, url):
+        r = self._get(url, allow_redirects=False)
+        if r is None:
+            return None
+        edge = urllib.parse.urljoin(url, r.headers.get("Location", url)) if r.is_redirect else url
+        r.close()
+        return edge
+
+    def pump(self, handler, src, up, rng):
+        """Repassa o vídeo para a TV. Se o servidor da conta travar ou cair no meio, reconecta a partir do
+        byte onde parou (filme) ou de novo (canal ao vivo) e continua na mesma conexão com a TV."""
+        start, end = 0, ""
+        m = re.match(r"bytes=(\d+)-(\d*)", rng or "")
+        if m:
+            start, end = int(m.group(1)), m.group(2)
+        total = int(up.headers.get("Content-Length") or 0)
+        sent, tries = 0, 0
+        while True:
+            try:
+                for chunk in up.iter_content(65536):
+                    try:
+                        handler.wfile.write(chunk)
+                    except OSError:
+                        return up.close()   # a TV fechou: pulou para outro ponto ou parou
+                    sent += len(chunk)
+                    tries = 0
+                if src["kind"] == "file" and (not total or sent >= total):
+                    return up.close()   # mandou tudo
+                reason = "o servidor fechou antes do fim"
+            except Exception as e:  # noqa: BLE001 - travou, caiu ou foi fechada por outra conexão
+                reason = type(e).__name__
+            up.close()
+            if self.src is not src or self.upstream is not up:
+                return   # trocou de vídeo, parou, ou a TV já abriu outra conexão (pulou de ponto)
+            tries += 1
+            if tries > RESUME_TRIES:
+                log.warning("TV: o servidor não voltou depois de %d tentativas; desisti", RESUME_TRIES)
+                return
+            log.warning("TV: o servidor travou no meio (%s), reconectando (tentativa %d)", reason, tries)
+            new_rng = f"bytes={start + sent}-{end}" if src["kind"] == "file" else None
+            new = self.open_upstream(src, new_rng)
+            if new is None:
+                continue
+            if src["kind"] == "file" and new.status_code != 206:
+                new.close()   # o servidor não aceitou continuar do meio: não dá para emendar
+                log.warning("TV: o servidor não continuou do ponto (%s)", new.status_code)
+                return
+            up = new
 
     def serve_hls(self, handler, src):
         """Canal HLS: baixa a lista e os pedaços .ts e manda tudo num fluxo contínuo."""
