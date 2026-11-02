@@ -71,6 +71,8 @@ AUTO_SCAN_EVERY = 6 * 3600   # teste automático de todos os canais (as marcas d
 CONNECT_TIMEOUT = 15         # segundos para o canal começar a tocar
 STALL_TIMEOUT = 12           # segundos sem avançar = travado
 VOD_CONNECT_TIMEOUT = 30     # filmes e o que já passou demoram mais para abrir
+TV_VOLUME_SCALE = 0.4        # cada ponto do volume do PC mexe 0,4 no da TV (100 na TV é altíssimo)
+TV_VOLUME_MAX = 60
 VOD_REFRESH = 3 * 86400      # filmes e séries de uma conta Xtream são baixados de novo depois de 3 dias
 MAX_CONSECUTIVE_FAILS = 25   # evita loop infinito pulando canais
 LIST_MAX_AGE = 86400          # atualização automática das listas (1× por dia)
@@ -198,6 +200,9 @@ class MainWindow(QMainWindow):
         self.recorder = Recorder(self.instance)
         self.tvcast = TvCast(self.cfg, self)    # "Mandar pra TV": o canal passa na TV Samsung pela rede de casa
         self.tvcast.status.connect(self._on_tvcast_status)
+        self.tvcast.progress.connect(self._on_tvcast_progress)
+        self._tv_muted = False
+        self._tv_pc_vol0 = 100    # volume do PC quando começou a passar na TV
         self._build_ui()
         self.overlay = FullscreenOverlay()
         self._wire_overlay()
@@ -1817,6 +1822,10 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1500, self._ts_status)
 
     def seek_relative(self, seconds):
+        if self.tvcast.playing:   # passando na TV: os botões do PC mandam na TV
+            if not self.tvcast.seek_by(seconds):
+                self._info("Canal ao vivo na TV: dá para pausar, mas não voltar ou avançar.", 5)
+            return
         if self.vod:
             if self.confirmed and not self.vod["ended"]:
                 self.player.set_time(max(0, self.player.get_time() + int(seconds * 1000)))
@@ -1894,11 +1903,14 @@ class MainWindow(QMainWindow):
         self.seek_end_lbl.setText(f"{int(kept // 60)}:{int(kept % 60):02d} guardados")
 
     def _seek_preview(self, value):
-        if self.vod:
+        if self.vod or self.tvcast.playing:
             return self.seek_pos_lbl.setText(self._fmt_clock(value))
         self.seek_pos_lbl.setText(self._fmt_behind(self.seek.maximum() - value))
 
     def _seek_released(self):
+        if self.tvcast.playing:
+            self.tvcast.seek_to(float(self.seek.value()))
+            return
         if self.vod:
             if self.confirmed and not self.vod["ended"]:
                 self.player.set_time(int(self.seek.value() * 1000))
@@ -2144,6 +2156,11 @@ class MainWindow(QMainWindow):
                 return self.play(c, auto=auto, force=True)
 
     def toggle_pause(self):
+        if self.tvcast.playing:
+            paused = self.tvcast.toggle_pause()
+            for b in (self.play_btn, self.overlay.play_btn):
+                set_btn_icon(b, "play" if paused else "pause")
+            return
         if not self.current:
             return self.step(+1)
         if self.vod:
@@ -2197,6 +2214,11 @@ class MainWindow(QMainWindow):
         self.view.viewport().update()
 
     def _set_volume(self, v):
+        if self.tvcast.playing:   # mexe a partir do volume em que a TV estava, sem pulo
+            base = self.tvcast.volume0
+            if base is None:
+                base = round(self._tv_pc_vol0 * TV_VOLUME_SCALE)
+            self.tvcast.set_volume(min(TV_VOLUME_MAX, max(0, round(base + (v - self._tv_pc_vol0) * TV_VOLUME_SCALE))))
         self.cfg["volume"] = v
         self.player.audio_set_volume(v)
         self.audio.volume = v / 100
@@ -2212,6 +2234,12 @@ class MainWindow(QMainWindow):
                 s.blockSignals(False)
 
     def toggle_mute(self):
+        if self.tvcast.playing:
+            self._tv_muted = not self._tv_muted
+            self.tvcast.set_mute(self._tv_muted)
+            for b in (self.mute_btn, self.overlay.mute_btn):
+                set_btn_icon(b, "mute" if self._tv_muted else "volume")
+            return
         m = not (self.audio.muted if self.audio.attached else self.player.audio_get_mute() == 1)
         self.player.audio_set_mute(m)
         self.audio.muted = m
@@ -3770,16 +3798,38 @@ class MainWindow(QMainWindow):
             self.tv_btn.setChecked(False)
             self._info(f"“{ch.name}” não está num formato que a TV abra.", 6)
 
+    def _on_tvcast_progress(self, pos, dur, state):
+        """Passando na TV: a barra de tempo e o ▶/❚❚ do PC mostram o que a TV está fazendo."""
+        vod = self.tvcast.vod
+        self.seek_row.setVisible(vod)
+        for b in (self.back_btn, self.fwd_btn):
+            b.setEnabled(vod)
+        for b in (self.play_btn, self.overlay.play_btn):
+            set_btn_icon(b, "play" if state == "PAUSED_PLAYBACK" else "pause")
+        if not vod or self.seek.isSliderDown():
+            return
+        self.seek.blockSignals(True)
+        self.seek.setRange(0, max(1, int(dur)))
+        self.seek.setValue(int(min(max(pos, 0), max(dur, 0))))
+        self.seek.blockSignals(False)
+        self.seek_pos_lbl.setText(self._fmt_clock(pos))
+        self.seek_end_lbl.setText(self._fmt_clock(dur) if dur > 0 else "")
+
     def _on_tvcast_status(self, text, color):
         if not text:
             self.tv_btn.setChecked(False)
             self.video.set_message("")
+            self._tv_muted = False
+            set_btn_icon(self.play_btn, "play")
+            self._ts_buttons()
             return
         self.tv_btn.setChecked(True)
+        if color == "ok":
+            self._tv_pc_vol0 = self.vol.value()
         if color == "bad":
             self.tv_btn.setChecked(False)
-        self.video.set_message(text + ("\nEscolha outro canal para trocar na TV, ou aperte o botão da TV para parar."
-                                       if color == "ok" else ""))
+        self.video.set_message(text + ("\nPause, volte, avance e mude o volume por aqui mesmo. Escolha outro canal "
+                                       "para trocar na TV, ou aperte o botão da TV para parar." if color == "ok" else ""))
         self._info(text, 8)
 
     def closeEvent(self, e):

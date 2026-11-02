@@ -18,12 +18,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from xml.sax.saxutils import escape
 
 import requests
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from .log import log
 
 UA = "Mozilla/5.0"
 SSDP_ST = "urn:schemas-upnp-org:service:AVTransport:1"
+RENDERING = "urn:schemas-upnp-org:service:RenderingControl:1"
 DLNA_VOD = "DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
 DLNA_LIVE = "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
 BUSY_TRIES = 6              # o servidor ainda conta a conexão que o PC acabou de largar por alguns segundos
@@ -69,17 +70,30 @@ def find_renderer(timeout=3):
     return None
 
 
-def soap(ctrl, action, args="", timeout=15):
+def soap(ctrl, action, args="", timeout=15, service=SSDP_ST):
     body = (f'<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
             f's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:{action} '
-            f'xmlns:u="{SSDP_ST}"><InstanceID>0</InstanceID>{args}</u:{action}></s:Body></s:Envelope>').encode()
+            f'xmlns:u="{service}"><InstanceID>0</InstanceID>{args}</u:{action}></s:Body></s:Envelope>').encode()
     req = urllib.request.Request(ctrl, data=body, method="POST", headers={
-        "Content-Type": 'text/xml; charset="utf-8"', "SOAPACTION": f'"{SSDP_ST}#{action}"'})
+        "Content-Type": 'text/xml; charset="utf-8"', "SOAPACTION": f'"{service}#{action}"'})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, r.read().decode("utf8", "ignore")
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode("utf8", "ignore")
+
+
+def _secs(clock):
+    """"0:12:34" -> 754.0 (a TV responde "NOT_IMPLEMENTED" ou vazio quando não sabe)."""
+    try:
+        h, m, sec = clock.split(":")
+        return int(h) * 3600 + int(m) * 60 + float(sec)
+    except (ValueError, AttributeError):
+        return 0.0
+
+
+def _clock(sec):
+    return time.strftime("%H:%M:%S", time.gmtime(max(0, int(sec))))
 
 
 def _kind(url):
@@ -252,15 +266,26 @@ class Relay:
 
 class TvCast(QObject):
     status = pyqtSignal(str, str)    # texto para a tela, cor ("ok", "warn", "bad"); "" = acabou
+    progress = pyqtSignal(float, float, str)   # posição, duração (s) e estado da TV ("PLAYING", "PAUSED_PLAYBACK"…)
     _done = pyqtSignal(int, str, str)
+    _polled = pyqtSignal(int, float, float, str)
 
     def __init__(self, cfg, parent=None):
         super().__init__(parent)
         self.cfg = cfg
         self.relay = None
         self.channel = None
+        self.vod = False          # filme/episódio (dá para voltar/avançar); canal ao vivo só pausa
+        self.playing = False      # a TV já confirmou que começou
+        self.state = ""
+        self.pos = self.dur = 0.0
+        self.volume0 = None     # volume da TV quando começou a passar
         self._job = 0
+        self._polling = False
+        self._hold_until = 0.0    # depois de um comando, ignora a posição antiga que a TV ainda informa
         self._done.connect(self._on_done)
+        self._polled.connect(self._on_polled)
+        self._poll_timer = QTimer(self, interval=1000, timeout=self._poll)
 
     @property
     def active(self):
@@ -283,6 +308,10 @@ class TvCast(QObject):
             if str(o).startswith(":http-referrer="):
                 headers["Referer"] = str(o).split("=", 1)[1]
         self.channel = item
+        self.vod = _kind(url) == "file"
+        self.playing = False
+        self.state, self.pos, self.dur = "", float(position or 0), 0.0
+        self._poll_timer.stop()
         self._job += 1
         job = self._job
         self.status.emit(f"📺 Mandando “{item.name}” para a TV…", "warn")
@@ -293,6 +322,8 @@ class TvCast(QObject):
     def stop(self):
         name = self.channel.name if self.channel else ""
         self.channel = None
+        self.playing = False
+        self._poll_timer.stop()
         self._job += 1
         if self.relay:
             self.relay.clear()
@@ -353,6 +384,9 @@ class TvCast(QObject):
                 raise OSError("a TV não começou a tocar (ela mostrou alguma mensagem?)")
             if vod and position > 5:
                 soap(ctrl, "Seek", f"<Unit>REL_TIME</Unit><Target>{time.strftime('%H:%M:%S', time.gmtime(position))}</Target>")
+            vol = re.findall(r"<CurrentVolume>(\d+)", soap(ctrl.replace("AVTransport", "RenderingControl"), "GetVolume",
+                             "<Channel>Master</Channel>", timeout=5, service=RENDERING)[1])
+            self.volume0 = int(vol[0]) if vol else None
             log.info("TV: tocando %s no player da TV", name)
             self._done.emit(job, f"📺 Passando na TV: {name}", "ok")
         except Exception as e:  # noqa: BLE001
@@ -366,7 +400,93 @@ class TvCast(QObject):
             self.channel = None
             if self.relay:
                 self.relay.clear()
+        elif color == "ok":
+            self.playing = True
+            self.state = "PLAYING"
+            self._hold_until = time.monotonic() + 3   # a TV ainda está indo para o ponto de onde parou
+            self._poll_timer.start()
         self.status.emit(text, color)
+
+    # ---- controles: os botões do Pudim no PC mandam na TV
+    def _command(self, action, args="", service=SSDP_ST):
+        ctrl = self.cfg["tv_dmr"]
+        if not (self.playing and ctrl):
+            return False
+        if service == RENDERING:
+            ctrl = ctrl.replace("AVTransport", "RenderingControl")
+
+        def run():
+            try:
+                code, body = soap(ctrl, action, args, timeout=8, service=service)
+                if code != 200:
+                    log.warning("TV: %s recusado (%s)", action, _upnp_error(body))
+            except OSError as e:
+                log.warning("TV: %s falhou: %s", action, e)
+        threading.Thread(target=run, name=f"tv-{action}", daemon=True).start()
+        return True
+
+    def toggle_pause(self):
+        """Pausa ou continua. Devolve True se ficou pausado."""
+        pause = self.state == "PLAYING"
+        if self._command("Pause" if pause else "Play", "" if pause else "<Speed>1</Speed>"):
+            self.state = "PAUSED_PLAYBACK" if pause else "PLAYING"
+            self._hold_until = time.monotonic() + 2
+            self.progress.emit(self.pos, self.dur, self.state)
+        return pause
+
+    def seek_to(self, sec):
+        if not self.vod:
+            return False
+        sec = max(0.0, min(sec, self.dur - 3) if self.dur else sec)
+        if not self._command("Seek", f"<Unit>REL_TIME</Unit><Target>{_clock(sec)}</Target>"):
+            return False
+        self.pos = sec
+        self._hold_until = time.monotonic() + 3
+        self.progress.emit(self.pos, self.dur, self.state)
+        return True
+
+    def seek_by(self, seconds):
+        return self.seek_to(self.pos + seconds)
+
+    def set_volume(self, volume):
+        return self._command("SetVolume", f"<Channel>Master</Channel><DesiredVolume>{int(volume)}</DesiredVolume>",
+                             RENDERING)
+
+    def set_mute(self, mute):
+        return self._command("SetMute", f"<Channel>Master</Channel><DesiredMute>{int(bool(mute))}</DesiredMute>",
+                             RENDERING)
+
+    def _poll(self):
+        ctrl = self.cfg["tv_dmr"]
+        if self._polling or not (self.playing and ctrl):
+            return
+        self._polling = True
+        job = self._job
+
+        def run():
+            try:
+                info = soap(ctrl, "GetPositionInfo", timeout=5)[1]
+                state = re.findall(r"<CurrentTransportState>(\w+)", soap(ctrl, "GetTransportInfo", timeout=5)[1])
+                rel = re.search(r"<RelTime>([^<]*)</RelTime>", info)
+                dur = re.search(r"<TrackDuration>([^<]*)</TrackDuration>", info)
+                self._polled.emit(job, _secs(rel.group(1)) if rel else 0.0, _secs(dur.group(1)) if dur else 0.0,
+                                  state[0] if state else "")
+            except OSError:
+                pass   # a TV demorou: tenta no próximo segundo
+            finally:
+                self._polling = False
+        threading.Thread(target=run, name="tv-posicao", daemon=True).start()
+
+    def _on_polled(self, job, pos, dur, state):
+        if job != self._job or not self.playing:
+            return
+        if dur > 0:
+            self.dur = dur
+        if time.monotonic() >= self._hold_until:
+            self.pos = pos
+            if state in ("PLAYING", "PAUSED_PLAYBACK", "STOPPED"):
+                self.state = state
+        self.progress.emit(self.pos, self.dur, self.state)
 
 
 def _upnp_error(body):
