@@ -328,6 +328,20 @@ class LLMTranslator:
             out = lines[-1]  # traduziu o contexto junto: a fala pedida é a última
         return out.replace("<<<", "").replace(">>>", "").strip().strip('"“”«»').strip()
 
+    def chat(self, system, turns, max_new=260):
+        """Conversa (o Pudinho): turns = [(quem, texto)], quem "user" ou "model"; devolve a resposta."""
+        prompt = "<bos>"
+        for i, (who, text) in enumerate(turns):
+            if i == 0 and who == "user":
+                text = f"{system}\n\n{text}"
+            prompt += f"<start_of_turn>{who}\n{text}<end_of_turn>\n"
+        prompt += "<start_of_turn>model\n"
+        tokens = self.tok.encode(prompt, add_special_tokens=False).tokens
+        res = self.gen.generate_batch([tokens], max_length=max_new, sampling_topk=20, sampling_temperature=0.6,
+                                      repetition_penalty=1.1, include_prompt_in_result=False,
+                                      end_token=["<end_of_turn>", "<eos>"])
+        return self.tok.decode(res[0].sequences_ids[0], skip_special_tokens=True).strip()
+
     def summarize(self, lines):
         """Resumo curto ("O que eu perdi?") das falas dos últimos minutos de um canal."""
         text = "\n".join(lines)[-5000:]

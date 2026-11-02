@@ -1,4 +1,4 @@
 """Pudim (antigo IPTV Player) — player de IPTV com troca automática de canais."""
 APP_NAME = "Pudim"
-APP_VERSION = "1.21.1"
+APP_VERSION = "1.22.0"
 REPO = "caionicfilho89-dot/iptv-player"

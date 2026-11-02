@@ -16,7 +16,7 @@ from PyQt6.QtGui import (QColor, QCursor, QDesktopServices, QFont, QGuiApplicati
                          QShortcut)
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply
 from PyQt6.QtWidgets import (
-    QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDialog, QDockWidget, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QListView,
     QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QSizePolicy,
     QSlider, QSpinBox, QSplitter, QStackedWidget, QVBoxLayout, QWidget,
@@ -59,6 +59,7 @@ from .goals import GoalWatcher, describe as describe_game, same_team
 from .voice import VoiceControl, parse_command
 from .adbreak import LogoDetector
 from .tvcast import TvCast
+from .assistant import ChatPanel
 from .updater import UpdateDownloader, can_self_update, run_installer, setup_asset
 from .theme import T, app_icon, app_icon_pixmap, apply_theme, build_style, icon
 from .vlcload import vlc
@@ -398,6 +399,14 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.home)
         self.stack.addWidget(root)
         self.setCentralWidget(self.stack)
+        self.chat = ChatPanel(self)                  # Pudinho: o assistente, num painel à direita
+        self.chat_dock = QDockWidget(self)
+        self.chat_dock.setObjectName("chatDock")
+        self.chat_dock.setTitleBarWidget(QWidget())
+        self.chat_dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
+        self.chat_dock.setWidget(self.chat)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.chat_dock)
+        self.chat_dock.hide()
         self._paint_brand()
         self._build_nav()
 
@@ -566,7 +575,9 @@ class MainWindow(QMainWindow):
         self.tv_btn = make_btn("tv", "Mandar pra TV: o canal passa na TV Samsung pela rede de casa (Ctrl+Shift+T)",
                                kind="tool", checkable=True, icon_size=18)
         self.tv_btn.clicked.connect(self.toggle_tv)
-        for b in (self.cc_btn, self.tv_btn, self.guide_btn, self.rec_btn):
+        self.chat_btn = make_btn("chat", "Pudinho, o assistente: indica filmes, explica o app, conta dos jogos "
+                                 "(Ctrl+J)", self.toggle_chat, kind="tool", icon_size=18)
+        for b in (self.cc_btn, self.tv_btn, self.chat_btn, self.guide_btn, self.rec_btn):
             top.addWidget(b)
         top.addSpacing(6)
         top.addWidget(self.more_btn)
@@ -589,6 +600,9 @@ class MainWindow(QMainWindow):
         self.home_menu_btn = make_btn("list", "Menu: listas, atualizar, controle pelo celular…", self._home_menu,
                                       kind="tool", icon_size=18)
         bar.addWidget(self.home_menu_btn)
+        self.home_chat_btn = make_btn("chat", "Pudinho, o assistente: indica filmes, explica o app, conta dos jogos "
+                                      "(Ctrl+J)", self.toggle_chat, kind="", text="  Pudinho", icon_size=17)
+        bar.insertWidget(0, self.home_chat_btn)
 
     def _menu_pos(self, m):
         """Menus do player abrem em cima do botão Mais (os botões originais ficam guardados)."""
@@ -687,6 +701,7 @@ class MainWindow(QMainWindow):
         a.setChecked(self.skip_cb.isChecked())
         m.addSeparator()
         act(m, self.tv_btn, "Mandar pra TV   Ctrl+Shift+T", "tv")
+        m.addAction(icon("chat", "text", 16), "Pudinho, o assistente   Ctrl+J", self.toggle_chat)
         m.addAction(icon("guide", "text", 16), "O que eu perdi?   Ctrl+Shift+R", self.what_did_i_miss)
         act(m, self.adskip_btn, "Pular intervalo (sem som no comercial)", "next")
         act(m, self.dub_btn, "Dublagem por IA   Ctrl+U", "dub")
@@ -931,6 +946,7 @@ class MainWindow(QMainWindow):
         sc("Ctrl+T", self.cc_btn.toggle)
         sc("Ctrl+Shift+T", self.tv_btn.click)
         sc("Ctrl+Space", self.voice_command)
+        sc("Ctrl+J", self.toggle_chat)
         sc("Ctrl+Shift+R", self.what_did_i_miss)
         sc("Ctrl+U", self.dub_btn.toggle)
         sc("Ctrl+Shift+A", self._next_audio_track)
@@ -3612,6 +3628,12 @@ class MainWindow(QMainWindow):
     def voice_command(self):
         self.voice.listen()
 
+    def toggle_chat(self):
+        show = not self.chat_dock.isVisible()
+        self.chat_dock.setVisible(show)
+        if show:
+            self.chat.focus_input()
+
     def _on_voice_status(self, text):
         if hasattr(self, "home"):
             self.home.status.setText(text)
@@ -3620,7 +3642,9 @@ class MainWindow(QMainWindow):
         if text:
             self._info(text, 8)
 
-    def _on_voice(self, text):
+    def _on_voice(self, text, from_chat=False):
+        if text and not from_chat and self.chat_dock.isVisible():
+            return self.chat.ask(text)   # com o Pudinho aberto, a fala vira pergunta para ele
         action, arg = parse_command(text) if text else (None, None)
         if action is None:
             return

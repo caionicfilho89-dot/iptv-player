@@ -1486,7 +1486,9 @@ class BrowsePage(QWidget):
         """[("m", id) / ("s", série)] na ordem dada -> cartões, um por título."""
         self._title_entries((), ())   # monta os mapas id -> filme e nome -> série
         by_sid, nodes = self._by_sid or {}, self._title_nodes or {}
-        skip = _same_title(exclude.name) if exclude is not None else None
+        skip = None
+        if exclude is not None:
+            skip = _same_title(exclude.label if isinstance(exclude, CatalogNode) else exclude.name)
         out, seen = [], set()
         for kind, ident in pairs:
             e = by_sid.get(ident) if kind == "m" else nodes.get(ident)
