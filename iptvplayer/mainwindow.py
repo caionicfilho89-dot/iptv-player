@@ -60,6 +60,7 @@ from .voice import VoiceControl, parse_command
 from .adbreak import LogoDetector
 from .tvcast import TvCast
 from .assistant import ChatPanel
+from .blackout import Blackout
 from .updater import UpdateDownloader, can_self_update, run_installer, setup_asset
 from .theme import T, app_icon, app_icon_pixmap, apply_theme, build_style, icon
 from .vlcload import vlc
@@ -400,6 +401,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(root)
         self.setCentralWidget(self.stack)
         self.chat = ChatPanel(self)                  # Pudinho: o assistente, num painel à direita
+        self.blackout = Blackout()                   # apagar a tela do PC enquanto o filme passa na TV
         self.chat_dock = QDockWidget(self)
         self.chat_dock.setObjectName("chatDock")
         self.chat_dock.setTitleBarWidget(QWidget())
@@ -577,7 +579,10 @@ class MainWindow(QMainWindow):
         self.tv_btn.clicked.connect(self.toggle_tv)
         self.chat_btn = make_btn("chat", "Pudinho, o assistente: indica filmes, explica o app, conta dos jogos "
                                  "(Ctrl+J)", self.toggle_chat, kind="tool", icon_size=18)
-        for b in (self.cc_btn, self.tv_btn, self.chat_btn, self.guide_btn, self.rec_btn):
+        self.dark_btn = make_btn("moon", "Apagar a tela do PC (Ctrl+Shift+B): fica preta e a luz do monitor "
+                                 "desliga enquanto você vê na TV; qualquer tecla volta", self.blackout.start,
+                                 kind="tool", icon_size=18)
+        for b in (self.cc_btn, self.tv_btn, self.dark_btn, self.chat_btn, self.guide_btn, self.rec_btn):
             top.addWidget(b)
         top.addSpacing(6)
         top.addWidget(self.more_btn)
@@ -702,6 +707,7 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         act(m, self.tv_btn, "Mandar pra TV   Ctrl+Shift+T", "tv")
         m.addAction(icon("chat", "text", 16), "Pudinho, o assistente   Ctrl+J", self.toggle_chat)
+        m.addAction(icon("moon", "text", 16), "Apagar a tela do PC   Ctrl+Shift+B", self.blackout.start)
         m.addAction(icon("guide", "text", 16), "O que eu perdi?   Ctrl+Shift+R", self.what_did_i_miss)
         act(m, self.adskip_btn, "Pular intervalo (sem som no comercial)", "next")
         act(m, self.dub_btn, "Dublagem por IA   Ctrl+U", "dub")
@@ -947,6 +953,7 @@ class MainWindow(QMainWindow):
         sc("Ctrl+Shift+T", self.tv_btn.click)
         sc("Ctrl+Space", self.voice_command)
         sc("Ctrl+J", self.toggle_chat)
+        sc("Ctrl+Shift+B", self.blackout.start)
         sc("Ctrl+Shift+R", self.what_did_i_miss)
         sc("Ctrl+U", self.dub_btn.toggle)
         sc("Ctrl+Shift+A", self._next_audio_track)
@@ -3853,7 +3860,8 @@ class MainWindow(QMainWindow):
         if color == "bad":
             self.tv_btn.setChecked(False)
         self.video.set_message(text + ("\nPause, volte, avance e mude o volume por aqui mesmo. Escolha outro canal "
-                                       "para trocar na TV, ou aperte o botão da TV para parar." if color == "ok" else ""))
+                                       "para trocar na TV, ou aperte o botão da TV para parar.\n🌙 Apague a tela do "
+                                       "PC com Ctrl+Shift+B (qualquer tecla volta)." if color == "ok" else ""))
         self._info(text, 8)
 
     def closeEvent(self, e):

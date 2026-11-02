@@ -55,6 +55,7 @@ MANUAL = """MANUAL DO PUDIM
 - Controle pelo celular: no Menu do Início, mostra um QR code para usar o celular como controle.
 - Retrospectiva (Ctrl+Shift+H): seus canais mais vistos e conquistas.
 - Listas: no Menu do Início dá para adicionar sua lista M3U ou entrar com a conta (Xtream).
+- Apagar a tela do PC (Ctrl+Shift+B ou botão da lua): os monitores ficam pretos e desligam a luz enquanto o filme passa na TV; qualquer tecla ou clique volta.
 - Pudinho (Ctrl+J): este chat."""
 
 RE_HELP = re.compile(r"^(como|onde|cade|qual|quais|o que e|o que significa|pra que|para que|por que|porque|tem como|"
