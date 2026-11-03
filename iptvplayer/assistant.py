@@ -61,6 +61,7 @@ MANUAL = """MANUAL DO PUDIM
 - Modo casal: diga "eu gosto de suspense e ela de comédia" e o Pudinho procura títulos que agradam os dois.
 - Dormir quando o filme na TV acabar: no menu Mais; no fim do filme a tela apaga e o PC dorme (1 minuto para cancelar com qualquer tecla).
 - Continuar de onde parou: filmes vistos na TV também guardam onde você parou (fileira Continuar assistindo e botão Continuar).
+- Recap "o que rolou até aqui": ao voltar para uma série depois de um tempo, antes do episódio a IA resume os episódios anteriores (sem spoiler). Dá para pular ou desligar ("Não mostrar recaps").
 - Pudinho (Ctrl+J): este chat."""
 
 RE_HELP = re.compile(r"^(como|onde|cade|qual|quais|o que e|o que significa|pra que|para que|por que|porque|tem como|"

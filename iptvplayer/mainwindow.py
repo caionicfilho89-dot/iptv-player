@@ -29,6 +29,7 @@ from . import xtream
 from . import youtube
 from . import catalog as cat
 from . import sports
+from . import recap
 from .recommend import Recommender
 from .audio import AudioEngine
 from .dub import Dubber
@@ -901,7 +902,8 @@ class MainWindow(QMainWindow):
         idx = next((i for i, c in enumerate(episodes) if c.url == ch.url), 0)
         queue = [(as_vod(c), "") for c in episodes[idx + 1:]]
         item = as_vod(episodes[idx])
-        self.play_ondemand(item, item.url, start=self.resume_start(item), playlist=queue)
+        recap.maybe_recap(self, episodes[idx], lambda: self.play_ondemand(
+            item, item.url, start=self.resume_start(item), playlist=queue))
 
     def resume_start(self, item):
         return self._resume_pos(item.url)

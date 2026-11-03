@@ -20,7 +20,9 @@ from .paths import CACHE
 
 SERIES_FILE = CACHE / "info_series.json"
 MOVIES_FILE = CACHE / "info_filmes.json"
+RECAP_DIR = CACHE / "recaps"          # sinopses por episódio (para o resumo "o que rolou até aqui")
 SERIES_MAX_AGE = 3 * 86400
+RECAP_MAX_AGE = 14 * 86400
 TIMEOUT = 30
 CAST_WORKERS = 3          # consultas ao mesmo tempo ao montar o elenco de todos os filmes
 CAST_START_DELAY = 30     # s depois de abrir, para não disputar com o carregamento
@@ -231,7 +233,11 @@ class MetaService(QObject):
             for d in data if isinstance(data, list) else []:
                 name = catalog_fold(d.get("name") or "").strip()
                 if name:
-                    items[name] = _clean(d)
+                    info = _clean(d)
+                    sid = d.get("series_id")
+                    if sid not in (None, ""):
+                        info["sid"] = str(sid)   # para buscar as sinopses dos episódios (recap)
+                    items[name] = info
             tmp = SERIES_FILE.with_suffix(".tmp")
             tmp.write_text(json.dumps({"items": items}, ensure_ascii=False), encoding="utf8")
             tmp.replace(SERIES_FILE)
@@ -247,6 +253,67 @@ class MetaService(QObject):
 
     def series_of_episode(self, ch):
         return self.series_info(series_parts(ch.name)[0])
+
+    def _series_id(self, title):
+        """O series_id pelo nome; se o cache antigo não guardou o id, recarrega as séries uma vez."""
+        key = catalog_fold(title).strip()
+        info = self.series.get(key)
+        sid = info.get("sid") if info else None
+        if sid or not self.account:
+            return sid
+        if not getattr(self, "_ids_tried", False):   # cache antigo (sem ids): recarrega uma vez só
+            self._ids_tried = True
+            self._load_series()
+            info = self.series.get(key)
+            sid = info.get("sid") if info else None
+        return sid
+
+    def episodes_with_plot(self, title):
+        """[[temporada, episódio, título, sinopse], …] ordenado da série, ou None se não der.
+        A sinopse pode vir vazia em algumas séries; quem chama decide o que fazer. Guardado em disco."""
+        sid = self._series_id(title)
+        if not sid:
+            return None
+        cache = RECAP_DIR / f"{sid}.json"
+        try:
+            if time.time() - cache.stat().st_mtime < RECAP_MAX_AGE:
+                return json.loads(cache.read_text(encoding="utf8"))
+        except (OSError, ValueError):
+            pass
+        data = None
+        for attempt in range(4):   # o servidor da conta engasga (503) de vez em quando
+            try:
+                data = self._api(action="get_series_info", series_id=sid)
+                break
+            except Exception as exc:  # noqa: BLE001
+                if attempt == 3:
+                    log.info("Recap: as sinopses dos episódios não vieram (%s)", type(exc).__name__)
+                    return None
+                time.sleep(2.5)
+        eps = (data or {}).get("episodes") or {}
+        out = []
+        for season, lst in (eps.items() if isinstance(eps, dict) else []):
+            for e in lst if isinstance(lst, list) else []:
+                ei = e.get("info") or {}
+                try:
+                    s = int(e.get("season") or ei.get("season") or season)
+                except (TypeError, ValueError):
+                    s = 0
+                try:
+                    n = int(e.get("episode_num") or 0)
+                except (TypeError, ValueError):
+                    n = 0
+                plot = (ei.get("plot") or ei.get("overview") or e.get("plot") or "").strip()
+                out.append([s, n, (e.get("title") or f"S{s:02d}E{n:02d}"), plot])
+        out.sort(key=lambda x: (x[0], x[1]))
+        try:
+            RECAP_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = cache.with_suffix(".tmp")
+            tmp.write_text(json.dumps(out, ensure_ascii=False), encoding="utf8")
+            tmp.replace(cache)
+        except OSError:
+            pass
+        return out
 
     def movie_info(self, ch, fetch=True):
         """Informações do filme; se ainda não tem, busca em segundo plano (avisa por movie_ready)."""

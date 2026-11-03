@@ -59,6 +59,7 @@ DEFAULTS = {
     "region": "all",  # filtro de país da tela Início (themes.REGIONS)
     "sleep_after_tv": False,  # quando o filme mandado pra TV acaba: apaga a tela e o PC dorme
     "goal_alerts": True,  # avisa quando sai gol nos jogos que passam nos seus canais (goals.py)
+    "recap": True,  # antes de continuar uma série, a IA resume "o que rolou até aqui" (sem spoiler)
     "night_audio": False,  # modo madrugada: comprime o áudio (diálogos nítidos, sem estouros)
     "night_audio_tv": False,  # modo madrugada TAMBÉM na TV (transcodifica o áudio no relay) — experimental, desligado
     "tv_ip": "", "tv_token": "", "tv_dmr": "",  # "Mandar pra TV" (tvcast.py): endereço de controle do player da TV
